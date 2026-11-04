@@ -20,7 +20,11 @@ os.environ.setdefault("HF_HOME", str(MODEL_DIR))
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+# Tried in order when the main model is busy or unavailable.
+GEMINI_FALLBACK_MODELS = [m.strip() for m in os.getenv(
+    "GEMINI_FALLBACK_MODELS", "gemini-flash-latest,gemini-3.7-flash,gemini-3.5-flash,gemini-flash-lite-latest"
+).split(",") if m.strip()]
 
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 COLLECTION_NAME = "course_docs"

@@ -87,7 +87,7 @@ Per-question results are saved to `eval/results.csv` for your report.
 
 | Variable | Default | |
 |---|---|---|
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Any Gemini model available to your key |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Any Gemini model available to your key |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | 800 / 150 | Characters |
 | `TOP_K` | 5 | Chunks retrieved per question |
 | `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Any sentence-transformers model |
