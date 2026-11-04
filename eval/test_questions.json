@@ -1,0 +1,27 @@
+[
+  {
+    "question": "What is the problem statement of the project?",
+    "source": "AI_LMS_RAG_Project_Synopsis.pdf",
+    "pages": [1]
+  },
+  {
+    "question": "Which Sustainable Development Goals does the project align with?",
+    "source": "AI_LMS_RAG_Project_Synopsis.pdf",
+    "pages": [2]
+  },
+  {
+    "question": "What hardware is required to run the prototype?",
+    "source": "AI_LMS_RAG_Project_Synopsis.pdf",
+    "pages": [2]
+  },
+  {
+    "question": "How will the system be evaluated?",
+    "source": "AI_LMS_RAG_Project_Synopsis.pdf",
+    "pages": [1, 2]
+  },
+  {
+    "question": "Which libraries are used for PDF extraction and vector search?",
+    "source": "AI_LMS_RAG_Project_Synopsis.pdf",
+    "pages": [2]
+  }
+]
