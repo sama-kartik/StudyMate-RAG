@@ -1,0 +1,7 @@
+.env
+.venv/
+.git/
+.claude/
+__pycache__/
+data/
+eval/results.csv

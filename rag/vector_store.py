@@ -12,7 +12,9 @@ from sentence_transformers import SentenceTransformer  # noqa: E402
 
 @lru_cache(maxsize=1)
 def _embedder() -> SentenceTransformer:
-    return SentenceTransformer(EMBEDDING_MODEL)
+    # CPU is plenty for this small model, and avoids the Apple-GPU (MPS) backend,
+    # which crashes inside gunicorn's forked worker processes on macOS.
+    return SentenceTransformer(EMBEDDING_MODEL, device="cpu")
 
 
 def embed(texts: List[str]) -> List[List[float]]:

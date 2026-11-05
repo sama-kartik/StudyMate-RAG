@@ -1,3 +1,14 @@
+---
+title: StudyMate RAG
+emoji: 📚
+colorFrom: indigo
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Course-material chatbot using Retrieval-Augmented Generation
+---
+
 # StudyMate — AI-Powered LMS Chatbot using RAG
 
 B.Tech Project-I, Department of CSE, Delhi Technological University (AY 2026-27)

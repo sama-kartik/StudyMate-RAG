@@ -2,15 +2,38 @@
 
 Run:  python app.py   then open http://127.0.0.1:5000
 """
+import logging
+
 from flask import Flask, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 
 from rag import pipeline, vector_store
-from rag.config import UPLOAD_DIR
+from rag.config import BASE_DIR, UPLOAD_DIR
 from rag.llm import LLMError
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB per upload
+log = logging.getLogger(__name__)
+
+SAMPLE_DOCS_DIR = BASE_DIR / "sample_docs"
+
+
+def preload_sample_docs():
+    """Index PDFs shipped in sample_docs/ that aren't in the database yet.
+
+    Free hosting (e.g. Hugging Face Spaces) wipes the disk on restart, so the
+    course PDFs committed to sample_docs/ are re-indexed automatically.
+    """
+    indexed = {d["source"] for d in vector_store.list_documents()}
+    for pdf in sorted(SAMPLE_DOCS_DIR.glob("*.pdf")):
+        if pdf.name not in indexed:
+            try:
+                log.warning("Preloading %s: %s", pdf.name, pipeline.ingest_pdf(str(pdf)))
+            except Exception as e:  # one bad PDF shouldn't stop the app starting
+                log.warning("Could not preload %s: %s", pdf.name, e)
+
+
+preload_sample_docs()
 
 
 @app.errorhandler(LLMError)
