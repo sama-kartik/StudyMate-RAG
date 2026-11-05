@@ -7,11 +7,17 @@ Metrics (matching the synopsis' evaluation plan):
   * Source attribution - % of answers that cite at least one passage, e.g. [1]
   * Response time      - mean retrieval and generation latency (seconds)
 
-Usage (from the project root, after uploading your PDFs in the app):
+It runs the same pipeline as the web app (Gemini embeddings, cosine-similarity
+top-k, Gemini answer) on PDFs in a local folder.
+
+Usage (from the project root):
+    pip install -r requirements-dev.txt
+    # put the PDFs your questions refer to in eval/docs/
     python -m eval.evaluate                      # uses eval/test_questions.json
-    python -m eval.evaluate --file my_tests.json
-    python -m eval.evaluate --retrieval-only     # no Gemini calls, retrieval metrics only
-Results are written to eval/results.csv.
+    python -m eval.evaluate --docs path/to/pdfs --file my_tests.json
+    python -m eval.evaluate --retrieval-only     # retrieval metrics only (no answers/judging)
+Results are written to eval/results.csv. Embeddings are cached in .cache/, so
+re-running only calls Gemini for new or changed PDFs.
 """
 import argparse
 import csv
@@ -21,9 +27,11 @@ import statistics
 import time
 from pathlib import Path
 
-from rag import pipeline, vector_store
-from rag.config import TOP_K
+from rag import pipeline
+from rag.config import BASE_DIR, TOP_K
 from rag.llm import generate
+from rag.local_index import index_folder
+from rag.search import top_k
 
 HERE = Path(__file__).resolve().parent
 
@@ -70,6 +78,7 @@ def rank_of_expected(hits, case):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--file", default=str(HERE / "test_questions.json"))
+    ap.add_argument("--docs", default=str(HERE / "docs"), help="folder with the PDFs")
     ap.add_argument("--k", type=int, default=TOP_K)
     ap.add_argument("--retrieval-only", action="store_true")
     ap.add_argument("--delay", type=float, default=4.0,
@@ -77,18 +86,22 @@ def main():
     args = ap.parse_args()
 
     cases = json.loads(Path(args.file).read_text())
-    indexed = {d["source"] for d in vector_store.list_documents()}
-    vector_store.search("warm-up", k=1)  # load the embedding model so it isn't timed
+    docs = index_folder(Path(args.docs), BASE_DIR / ".cache" / "index")
+    indexed = {d["source"] for d in docs}
+    chunks = [c for d in docs for c in d["chunks"]]
+    if not chunks:
+        print(f"No PDFs found in {args.docs}. Put the documents your questions refer to there.")
+        return
     rows = []
 
     for n, case in enumerate(cases, 1):
         q = case["question"]
         if case.get("source") and case["source"] not in indexed:
-            print(f"[{n}] SKIP - '{case['source']}' is not uploaded")
+            print(f"[{n}] SKIP - '{case['source']}' is not in {args.docs}")
             continue
 
-        t0 = time.perf_counter()
-        hits = vector_store.search(q, k=args.k)
+        t0 = time.perf_counter()  # query embedding (Gemini API) + similarity search
+        hits = top_k(pipeline.embed_query(q), chunks, k=args.k)
         t_ret = time.perf_counter() - t0
         rank = rank_of_expected(hits, case)
         row = {"question": q, "expected_source": case.get("source", ""),
@@ -97,7 +110,7 @@ def main():
                "retrieval_s": round(t_ret, 3)}
 
         if not args.retrieval_only:
-            res = pipeline.answer(q, k=args.k)
+            res = pipeline.answer(q, hits)
             rel, faith, reason = judge(q, hits, res["answer"])
             row.update({"generation_s": res["timings"]["generation"],
                         "cited": int(bool(re.search(r"\[\d+\]", res["answer"]))),

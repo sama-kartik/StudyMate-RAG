@@ -1,19 +1,18 @@
-"""The full RAG pipeline: ingest documents, answer questions, summarise documents."""
+"""The RAG pipeline, written to be stateless so it runs on serverless hosting.
+
+The vector store itself lives in the user's browser (IndexedDB, see public/static/app.js):
+
+  ingest:   browser extracts PDF text (pdf.js) -> index_pages() chunks + embeds it
+            -> browser stores chunks and vectors
+  question: embed_query() -> browser ranks its stored chunks by cosine similarity
+            -> answer() sends the top passages to Gemini
+  summary:  browser sends the document's chunks -> summarise()
+"""
 import time
-from pathlib import Path
 from typing import Dict, List
 
-from . import vector_store
 from .chunker import chunk_pages
-from .config import TOP_K
-from .llm import generate
-from .pdf_loader import extract_pages
-
-# Chunks less similar than this are treated as irrelevant to the question.
-# MiniLM gives fairly low cosine scores for short questions vs. long passages
-# (correct matches are often 0.2-0.4, unrelated text < 0.1), so keep this low and
-# let the LLM decide whether the remaining context actually answers the question.
-MIN_SCORE = 0.12
+from .llm import embed, generate
 
 ANSWER_SYSTEM = (
     "You are a study assistant for university students. Answer ONLY using the numbered "
@@ -28,61 +27,62 @@ SUMMARY_SYSTEM = (
     "provided text."
 )
 
+MAX_PASSAGES = 10
+MAX_SUMMARY_CHARS = 60000
 
-def ingest_pdf(path: str) -> Dict:
-    source = Path(path).name
-    pages = extract_pages(path)
-    if not pages:
-        raise ValueError("No extractable text found (the PDF may be scanned images).")
-    vector_store.delete_document(source)  # re-uploading replaces the old version
+
+def index_pages(source: str, pages: List[Dict]) -> List[Dict]:
+    """pages: [{"page": 1, "text": "..."}] -> chunks with embeddings."""
+    pages = [p for p in pages if (p.get("text") or "").strip()]
     chunks = chunk_pages(pages, source)
-    vector_store.add_chunks(chunks)
-    return {"source": source, "pages": len(pages), "chunks": len(chunks)}
+    if not chunks:
+        return []
+    vectors = embed([c["text"] for c in chunks])
+    return [{"id": c["id"], "source": source, "page": c["metadata"]["page"],
+             "chunk": c["metadata"]["chunk"], "text": c["text"], "embedding": v}
+            for c, v in zip(chunks, vectors)]
 
 
-def _build_prompt(question: str, hits: List[Dict]) -> str:
+def embed_query(question: str) -> List[float]:
+    return embed([question], query=True)[0]
+
+
+def _build_prompt(question: str, passages: List[Dict]) -> str:
     ctx = "\n\n".join(
-        f"[{i}] (source: {h['source']}, page {h['page']})\n{h['text']}"
-        for i, h in enumerate(hits, start=1)
+        f"[{i}] (source: {p['source']}, page {p['page']})\n{p['text']}"
+        for i, p in enumerate(passages, start=1)
     )
     return f"Context passages:\n{ctx}\n\nQuestion: {question}\n\nAnswer:"
 
 
-def answer(question: str, k: int = TOP_K, source: str = None) -> Dict:
+def answer(question: str, passages: List[Dict]) -> Dict:
+    """passages: the top-ranked chunks [{source, page, text, score}], best first."""
+    passages = passages[:MAX_PASSAGES]
+    if not passages:
+        return {"answer": "I couldn't find anything relevant to that in the uploaded material. "
+                          "Try rephrasing, or upload the relevant notes first.",
+                "sources": [], "timings": {"generation": 0.0}}
     t0 = time.perf_counter()
-    hits = [h for h in vector_store.search(question, k=k, source=source) if h["score"] >= MIN_SCORE]
-    t_retrieval = time.perf_counter() - t0
-
-    if not hits:
-        return {
-            "answer": "I couldn't find anything relevant to that in the uploaded material. "
-                      "Try rephrasing, or upload the relevant notes first.",
-            "sources": [], "timings": {"retrieval": round(t_retrieval, 3), "generation": 0.0},
-        }
-
-    t1 = time.perf_counter()
-    text = generate(_build_prompt(question, hits), system=ANSWER_SYSTEM)
-    t_gen = time.perf_counter() - t1
-
-    sources = [{"n": i, "source": h["source"], "page": h["page"], "score": h["score"],
-                "excerpt": h["text"][:300]} for i, h in enumerate(hits, start=1)]
+    text = generate(_build_prompt(question, passages), system=ANSWER_SYSTEM)
+    sources = [{"n": i, "source": p["source"], "page": p["page"],
+                "score": round(float(p.get("score", 0)), 4), "excerpt": p["text"][:300]}
+               for i, p in enumerate(passages, start=1)]
     return {"answer": text, "sources": sources,
-            "timings": {"retrieval": round(t_retrieval, 3), "generation": round(t_gen, 3)}}
+            "timings": {"generation": round(time.perf_counter() - t0, 3)}}
 
 
-def summarise(source: str, max_chars: int = 60000) -> Dict:
-    chunks = vector_store.get_document_chunks(source)
+def summarise(source: str, chunks: List[Dict]) -> Dict:
+    """chunks: the document's chunks [{page, text}] in page order."""
     if not chunks:
-        raise ValueError(f"Document '{source}' not found.")
-
+        raise ValueError(f"Document '{source}' has no text to summarise.")
     # Gemini's large context lets us send most notes whole. Very long books are
     # sampled evenly so every part of the document is still represented.
     total = sum(len(c["text"]) for c in chunks)
-    if total > max_chars:
-        keep = max(1, int(len(chunks) * max_chars / total))
+    if total > MAX_SUMMARY_CHARS:
+        keep = max(1, int(len(chunks) * MAX_SUMMARY_CHARS / total))
         stride = len(chunks) / keep
         chunks = [chunks[int(i * stride)] for i in range(keep)]
-    body = "\n".join(f"(p{c['page']}) {c['text']}" for c in chunks)[:max_chars]
+    body = "\n".join(f"(p{c['page']}) {c['text']}" for c in chunks)[:MAX_SUMMARY_CHARS]
 
     prompt = (
         f"Document: {source}\n\n{body}\n\n"

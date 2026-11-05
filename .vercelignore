@@ -1,0 +1,6 @@
+.venv
+.cache
+data
+eval
+scripts
+sample_docs/*.pdf
