@@ -32,7 +32,9 @@ class LLMError(RuntimeError):
 @lru_cache(maxsize=1)
 def _client() -> genai.Client:
     if not GEMINI_API_KEY:
-        raise LLMError("GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.")
+        raise LLMError(
+            "GEMINI_API_KEY is not set. On Vercel: Project → Settings → Environment Variables, "
+            "add GEMINI_API_KEY, then redeploy. Locally: copy .env.example to .env and add your key.")
     # One attempt per model: when a model is busy we move to the next one
     # instead of letting the SDK wait and retry the same overloaded model.
     return genai.Client(
