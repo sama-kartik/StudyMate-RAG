@@ -27,12 +27,17 @@ function esc(s) {
 const md = (text) => DOMPurify.sanitize(marked.parse(text || ""));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const scroller = $("scroll");
+const scrollToEnd = () => { scroller.scrollTop = scroller.scrollHeight; };
+
 function addMessage(role, html) {
+  showView("home");
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
-  wrap.innerHTML = `<div class="bubble">${html}</div>`;
+  if (role === "bot") wrap.appendChild($("avatarTpl").content.cloneNode(true));
+  wrap.insertAdjacentHTML("beforeend", `<div class="bubble">${html}</div>`);
   messages.appendChild(wrap);
-  messages.scrollTop = messages.scrollHeight;
+  requestAnimationFrame(() => wrap.scrollIntoView({ block: "start", behavior: "smooth" }));
   return wrap.querySelector(".bubble");
 }
 
@@ -44,6 +49,10 @@ async function api(url, body, onWait) {
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok) return data;
+    if (res.status === 401 && data.login_required) {
+      window.location.href = "/login"; // session expired
+      throw new Error("Please sign in again.");
+    }
     if (res.status === 429 && !data.daily_quota && attempt < 4) {
       const wait = 5 * (attempt + 1);
       if (onWait) onWait(wait);
@@ -122,26 +131,43 @@ async function loadDocs() {
   renderDocs();
 }
 
+const ico = (name) => `<svg class="ic"><use href="#i-${name}"/></svg>`;
+
 function renderDocs() {
-  const list = $("docList"), scope = $("scope");
+  const scope = $("scope");
   const current = scope.value;
-  scope.innerHTML = '<option value="">All documents</option>';
-  if (!docs.size) {
-    list.innerHTML = '<li class="muted">No documents yet</li>';
-    return;
-  }
-  list.innerHTML = "";
-  for (const d of [...docs.values()].sort((a, b) => a.source.localeCompare(b.source))) {
-    const li = document.createElement("li");
-    li.innerHTML = `<div class="name">${esc(d.source)}</div>
-      <div class="meta">${d.pages} pages · ${d.chunks.length} chunks${d.builtIn ? " · built-in" : ""}</div>
-      <div class="actions"><button class="sum">Summarise</button>${d.builtIn ? "" : '<button class="del">Remove</button>'}</div>`;
-    li.querySelector(".sum").onclick = () => summarise(d.source);
-    if (!d.builtIn) li.querySelector(".del").onclick = () => removeDoc(d.source);
-    list.appendChild(li);
+  scope.innerHTML = '<option value="">All Documents</option>';
+  const sorted = [...docs.values()].sort((a, b) => a.source.localeCompare(b.source));
+  for (const d of sorted) {
     scope.insertAdjacentHTML("beforeend", `<option value="${esc(d.source)}">${esc(d.source)}</option>`);
   }
   scope.value = docs.has(current) ? current : "";
+
+  document.querySelectorAll("[data-doc-list]").forEach((list) => {
+    if (!sorted.length) {
+      list.innerHTML = `<li class="empty">${ico("file")}<div><strong>No documents uploaded yet</strong>
+        <span>Upload your course PDFs to get started!</span></div></li>`;
+      return;
+    }
+    list.innerHTML = "";
+    for (const d of sorted) {
+      const li = document.createElement("li");
+      li.className = "doc";
+      li.innerHTML = `<div class="doc-icon">${ico("file")}</div>
+        <div><div class="name">${esc(d.source)}</div>
+          <div class="meta">${d.pages} pages · ${d.chunks.length} chunks${d.builtIn ? " · built-in" : ""}</div></div>
+        <div class="actions"><button class="btn primary sum">${ico("spark")}Summarise</button>
+          ${d.builtIn ? "" : `<button class="btn danger del" aria-label="Remove ${esc(d.source)}">${ico("trash")}</button>`}</div>`;
+      li.querySelector(".sum").onclick = () => summarise(d.source);
+      if (!d.builtIn) li.querySelector(".del").onclick = () => removeDoc(d.source);
+      list.appendChild(li);
+    }
+  });
+
+  const user = sorted.filter((d) => !d.builtIn);
+  $("storageInfo").innerHTML = `<dt>Documents</dt><dd>${user.length}</dd>
+    <dt>Pages</dt><dd>${user.reduce((n, d) => n + d.pages, 0)}</dd>
+    <dt>Chunks</dt><dd>${user.reduce((n, d) => n + d.chunks.length, 0)}</dd>`;
 }
 
 /* ---------- PDF ingestion ---------- */
@@ -185,18 +211,19 @@ async function upload(files) {
   if (!files.length) return;
   const status = $("uploadStatus");
   status.innerHTML = "";
+  showView("home");
   for (const file of files) {
     const line = document.createElement("div");
     status.appendChild(line);
     if (!file.name.toLowerCase().endsWith(".pdf")) {
-      line.innerHTML = `<span class="err">✗ ${esc(file.name)}: only PDF files are supported</span>`;
+      line.innerHTML = `<span class="err">${ico("alert")} ${esc(file.name)}: only PDF files are supported</span>`;
       continue;
     }
     try {
       const d = await ingest(file, line);
-      line.textContent = `✓ ${d.source}: ${d.pages} pages, ${d.chunks.length} chunks`;
+      line.innerHTML = `<span class="ok">${ico("check")}</span> ${esc(d.source)}: ${d.pages} pages, ${d.chunks.length} chunks — ready for questions`;
     } catch (e) {
-      line.innerHTML = `<span class="err">✗ ${esc(file.name)}: ${esc(e.message)}</span>`;
+      line.innerHTML = `<span class="err">${ico("alert")} ${esc(file.name)}: ${esc(e.message)}</span>`;
     }
     renderDocs();
   }
@@ -364,15 +391,19 @@ $("chatForm").addEventListener("submit", async (e) => {
     bubble.innerHTML = '<span class="typing">Writing an answer…</span>';
     const r = await api("/api/answer", { question: q, passages });
     bubble.innerHTML = renderAnswer(r, retrieval);
+    bubble.closest(".msg").scrollIntoView({ block: "start", behavior: "smooth" });
   } catch (err) {
     bubble.innerHTML = `<span class="error">${esc(err.message)}</span>`;
   }
   $("sendBtn").disabled = false;
-  messages.scrollTop = messages.scrollHeight;
+  $("question").focus();
 });
 
-$("question").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("chatForm").requestSubmit(); }
+const question = $("question");
+function autoGrow() { question.style.height = "auto"; question.style.height = Math.min(question.scrollHeight, 140) + "px"; }
+question.addEventListener("input", autoGrow);
+question.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("chatForm").requestSubmit(); autoGrow(); }
 });
 
 /* ---------- upload widgets ---------- */
@@ -382,6 +413,48 @@ const dz = $("dropzone");
 ["dragleave", "drop"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("drag"); }));
 dz.addEventListener("drop", (e) => upload([...e.dataTransfer.files]));
 
-loadDocs().catch((e) => {
-  $("docList").innerHTML = `<li class="muted error">Could not start: ${esc(e.message)}</li>`;
+/* ---------- views (Home / My Documents / Settings / About) ---------- */
+const VIEWS = ["home", "documents", "settings", "about"];
+function showView(name) {
+  if (!VIEWS.includes(name)) name = "home";
+  document.querySelectorAll("[data-view]").forEach((v) => { v.hidden = v.dataset.view !== name; });
+  document.querySelectorAll(".nav-btn").forEach((b) => {
+    if (b.dataset.viewLink === name) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+  });
+  $("composerWrap").hidden = name !== "home";
+  if (location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
+  closeMenu();
+}
+document.addEventListener("click", (e) => {
+  const link = e.target.closest("[data-view-link]");
+  if (!link) return;
+  e.preventDefault();
+  showView(link.dataset.viewLink);
+  scroller.scrollTop = 0;
+});
+window.addEventListener("hashchange", () => showView(location.hash.slice(1)));
+
+/* mobile menu */
+const sidebar = $("sidebar"), scrim = $("scrim");
+function closeMenu() { sidebar.classList.remove("open"); scrim.hidden = true; }
+$("menuBtn").addEventListener("click", () => { sidebar.classList.add("open"); scrim.hidden = false; });
+scrim.addEventListener("click", closeMenu);
+
+/* settings */
+$("clearAll").addEventListener("click", async () => {
+  const mine = [...docs.values()].filter((d) => !d.builtIn);
+  if (!mine.length || !confirm(`Remove all ${mine.length} document(s) from this browser?`)) return;
+  for (const d of mine) { await store.remove(d.source); docs.delete(d.source); }
+  renderDocs();
+});
+
+showView(location.hash.slice(1) || "home");
+loadDocs().then(() => {
+  $("modelInfo").innerHTML = `<dt>Answers</dt><dd>${esc(CONFIG.chat_model || "Gemini")} (with automatic fallbacks)</dd>
+    <dt>Embeddings</dt><dd>${esc(CONFIG.embedding_model)} · ${CONFIG.embedding_dim} dimensions</dd>
+    <dt>Retrieval</dt><dd>Top ${CONFIG.top_k} passages, cosine similarity ≥ ${CONFIG.min_score}</dd>`;
+}).catch((e) => {
+  document.querySelectorAll("[data-doc-list]").forEach((l) => {
+    l.innerHTML = `<li class="empty error">${ico("alert")}<div><strong>Could not start</strong><span>${esc(e.message)}</span></div></li>`;
+  });
 });

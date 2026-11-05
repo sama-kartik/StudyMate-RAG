@@ -6,10 +6,13 @@ Vercel:  detected automatically (this file exports `app`).
 The server is stateless: it chunks, embeds and generates, while each user's
 documents and vectors are stored in their own browser (see public/static/app.js).
 """
-from flask import Flask, jsonify, render_template, request
+import os
+from datetime import timedelta
 
-from rag import pipeline
-from rag.config import EMBEDDING_DIM, EMBEDDING_MODEL, TOP_K
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+
+from rag import auth, pipeline
+from rag.config import EMBEDDING_DIM, EMBEDDING_MODEL, GEMINI_MODEL, TOP_K
 from rag.llm import LLMError
 from rag.search import MIN_SCORE
 
@@ -18,7 +21,49 @@ from rag.search import MIN_SCORE
 app = Flask(__name__, static_folder="public/static", static_url_path="/static")
 # Vercel rejects request bodies over 4.5 MB; the browser sends pages in small batches.
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
+app.config.update(
+    SECRET_KEY=auth.secret_key(),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",          # blocks cross-site form/API submissions
+    SESSION_COOKIE_SECURE=bool(os.getenv("VERCEL")),  # HTTPS-only when hosted
+    PERMANENT_SESSION_LIFETIME=timedelta(days=7),
+)
 MAX_PAGES_PER_REQUEST = 25
+
+
+@app.before_request
+def require_login():
+    """Everything except the login page needs a signed-in user."""
+    if request.endpoint in ("login", "static") or auth.current_user():
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify(error="Please sign in again.", login_required=True), 401
+    return redirect(url_for("login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if auth.current_user():
+        return redirect(url_for("index"))
+    error, email = None, ""
+    if request.method == "POST":
+        email = request.form.get("email", "")
+        if not auth.is_configured():
+            error = "Login isn't set up on the server yet (APP_USER_EMAIL / APP_PASSWORD missing)."
+        elif auth.check_credentials(email, request.form.get("password", "")):
+            session.clear()
+            session.permanent = bool(request.form.get("remember"))
+            session["user"] = auth.USER_EMAIL
+            return redirect(url_for("index"))
+        else:
+            error = "Incorrect email or password."
+    return render_template("login.html", error=error, email=email), (401 if error else 200)
+
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 
 @app.errorhandler(LLMError)
@@ -46,14 +91,14 @@ def _body():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", user=auth.current_user())
 
 
 @app.get("/api/config")
 def config():
     # The browser checks this so vectors from a different model are never mixed.
     return jsonify(embedding_model=EMBEDDING_MODEL, embedding_dim=EMBEDDING_DIM,
-                   top_k=TOP_K, min_score=MIN_SCORE)
+                   top_k=TOP_K, min_score=MIN_SCORE, chat_model=GEMINI_MODEL)
 
 
 @app.post("/api/index")

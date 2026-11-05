@@ -1,0 +1,41 @@
+{# Friendly robot mascot with a graduation cap, reading a book. #}
+<svg class="mascot{% if cls %} {{ cls }}{% endif %}" viewBox="0 0 240 240" role="img" aria-label="StudyMate robot mascot">
+  <defs>
+    <linearGradient id="mHead{{ mid }}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f4f1ff"/><stop offset="1" stop-color="#c9bff5"/>
+    </linearGradient>
+    <linearGradient id="mVisor{{ mid }}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2550"/><stop offset="1" stop-color="#14112b"/>
+    </linearGradient>
+    <linearGradient id="mBook{{ mid }}" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7b6cf6"/><stop offset="1" stop-color="#4b3bd1"/>
+    </linearGradient>
+    <linearGradient id="mCap{{ mid }}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a3fa8"/><stop offset="1" stop-color="#2b2370"/>
+    </linearGradient>
+  </defs>
+  <!-- body -->
+  <ellipse cx="120" cy="196" rx="58" ry="34" fill="url(#mHead{{ mid }})"/>
+  <!-- head -->
+  <rect x="52" y="60" width="136" height="112" rx="52" fill="url(#mHead{{ mid }})"/>
+  <rect x="44" y="104" width="16" height="30" rx="8" fill="#b3a6ee"/>
+  <rect x="180" y="104" width="16" height="30" rx="8" fill="#b3a6ee"/>
+  <!-- visor + face -->
+  <rect x="68" y="80" width="104" height="72" rx="34" fill="url(#mVisor{{ mid }})"/>
+  <path d="M90 116 q9 -12 18 0" stroke="#8be9ff" stroke-width="6" fill="none" stroke-linecap="round"/>
+  <path d="M132 116 q9 -12 18 0" stroke="#8be9ff" stroke-width="6" fill="none" stroke-linecap="round"/>
+  <path d="M108 132 q12 10 24 0" stroke="#a78bfa" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <!-- graduation cap -->
+  <path d="M120 30 L190 54 L120 78 L50 54 Z" fill="url(#mCap{{ mid }})"/>
+  <path d="M86 66 v14 q34 16 68 0 v-14 l-34 12 z" fill="#2b2370"/>
+  <path d="M176 50 v34" stroke="#f5b942" stroke-width="3"/>
+  <path d="M170 84 h12 l-2 14 h-8 z" fill="#f5b942"/>
+  <!-- open book -->
+  <path d="M64 170 q28 -12 56 4 v48 q-28 -14 -56 -4 z" fill="url(#mBook{{ mid }})"/>
+  <path d="M176 170 q-28 -12 -56 4 v48 q28 -14 56 -4 z" fill="url(#mBook{{ mid }})"/>
+  <path d="M120 174 v48" stroke="#2f2585" stroke-width="2"/>
+  <path d="M74 182 q20 -6 38 4 M74 194 q20 -6 38 4 M128 186 q18 -10 38 -4 M128 198 q18 -10 38 -4" stroke="#c4bbff" stroke-width="2.5" fill="none" stroke-linecap="round" opacity=".7"/>
+  <!-- hands -->
+  <circle cx="62" cy="196" r="14" fill="url(#mHead{{ mid }})"/>
+  <circle cx="178" cy="196" r="14" fill="url(#mHead{{ mid }})"/>
+</svg>

@@ -3,48 +3,157 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>StudyMate – RAG Course Assistant</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <title>StudyMate – Your AI Study Assistant</title>
+  {% include "partials/head.html" %}
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
-<div class="layout">
-  <aside class="sidebar">
-    <h1>StudyMate</h1>
-    <p class="tagline">Ask questions about your course material</p>
-
-    <label class="upload" id="dropzone">
-      <input type="file" id="fileInput" accept="application/pdf" multiple hidden>
-      <strong>Upload PDFs</strong>
-      <span>Click or drop notes, syllabus, textbooks</span>
-    </label>
-    <div id="uploadStatus" class="status"></div>
-
-    <h2>Documents</h2>
-    <ul id="docList" class="docs"><li class="muted">Loading…</li></ul>
-    <p class="note">Your PDFs and their index are stored only in this browser.</p>
-
-    <h2>Search in</h2>
-    <select id="scope"><option value="">All documents</option></select>
+{% include "partials/icons.html" %}
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="#home" data-view-link="home">
+      {% with lid="s" %}{% include "partials/logo.html" %}{% endwith %}
+      <span class="brand-name">Study<span class="grad">Mate</span></span>
+    </a>
+    <nav class="nav" aria-label="Main">
+      <button class="nav-btn" data-view-link="home"><svg class="ic"><use href="#i-home"/></svg>Home</button>
+      <button class="nav-btn" data-view-link="documents"><svg class="ic"><use href="#i-file"/></svg>My Documents</button>
+      <button class="nav-btn" data-view-link="settings"><svg class="ic"><use href="#i-settings"/></svg>Settings</button>
+      <button class="nav-btn" data-view-link="about"><svg class="ic"><use href="#i-info"/></svg>About</button>
+    </nav>
+    <div class="sidebar-spacer"></div>
+    <div class="tip">
+      <svg class="ic"><use href="#i-bolt"/></svg>
+      <div>Learn Smarter, Not Harder<small>Answers cite the page they came from.</small></div>
+    </div>
+    <div class="user-chip">
+      <span title="{{ user }}">{{ user }}</span>
+      <form method="post" action="/logout"><button class="icon-btn" title="Sign out" aria-label="Sign out"><svg class="ic"><use href="#i-logout"/></svg></button></form>
+    </div>
   </aside>
+  <div class="scrim" id="scrim" hidden></div>
 
-  <main class="chat">
-    <div id="messages" class="messages">
-      <div class="msg bot">
-        <div class="bubble">
-          Hi! Upload your course PDFs on the left, then ask me anything about them.
-          Every answer cites the file and page it came from.
+  <main class="main">
+    <div class="scroll" id="scroll">
+      <div class="view-wrap">
+        <div class="topbar view">
+          <button class="icon-btn menu-btn" id="menuBtn" aria-label="Open menu"><svg class="ic"><use href="#i-menu"/></svg></button>
+          <div class="mobile-brand">{% with lid="m" %}{% include "partials/logo.html" %}{% endwith %}<span>Study<span class="grad">Mate</span></span></div>
+          {% include "partials/theme_toggle.html" %}
         </div>
+
+        <!-- ================= HOME ================= -->
+        <section class="view" data-view="home">
+          <div class="hero">
+            <div>
+              <h1>Study<span class="grad">Mate</span></h1>
+              <h2>Your AI Study Assistant</h2>
+              <p>Upload your course PDFs and ask anything about them!</p>
+              <svg class="swoosh" viewBox="0 0 170 14" aria-hidden="true"><path d="M2 12 C 50 2, 110 0, 168 4" stroke="url(#sw)" stroke-width="4" fill="none" stroke-linecap="round"/><defs><linearGradient id="sw"><stop offset="0" stop-color="#6d4dfc"/><stop offset="1" stop-color="#a78bfa" stop-opacity=".2"/></linearGradient></defs></svg>
+            </div>
+            {% with mid="hero", cls="" %}{% include "partials/mascot.html" %}{% endwith %}
+          </div>
+
+          <label class="dropzone" id="dropzone">
+            <input type="file" id="fileInput" accept="application/pdf" multiple hidden>
+            <svg class="ic"><use href="#i-cloud"/></svg>
+            <strong>Upload PDFs</strong>
+            <span>Click or drag and drop your files here</span>
+            <div class="chips">Supports: PDF &nbsp;•&nbsp; Notes &nbsp;•&nbsp; Syllabus &nbsp;•&nbsp; Textbooks</div>
+          </label>
+          <div id="uploadStatus" class="status" aria-live="polite"></div>
+
+          <div class="section-head">
+            <h3><svg class="ic"><use href="#i-folder"/></svg>Your Documents</h3>
+            <select id="scope" class="select" aria-label="Search in"><option value="">All Documents</option></select>
+          </div>
+          <ul class="doc-list" data-doc-list></ul>
+
+          <div id="messages" class="messages" aria-live="polite">
+            <div class="msg bot">
+              <div class="avatar">{% with mid="a0", cls="" %}{% include "partials/mascot.html" %}{% endwith %}</div>
+              <div class="bubble">Hi! Upload your course PDFs above, then ask me anything about them. Every answer cites the file and page it came from. 💜</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ================= DOCUMENTS ================= -->
+        <section class="view" data-view="documents" hidden>
+          <h1 class="page-title">My Documents</h1>
+          <p class="page-sub">Everything you've uploaded. Documents are stored privately in this browser.</p>
+          <ul class="doc-list" data-doc-list></ul>
+        </section>
+
+        <!-- ================= SETTINGS ================= -->
+        <section class="view" data-view="settings" hidden>
+          <h1 class="page-title">Settings</h1>
+          <p class="page-sub">Appearance, data and account.</p>
+          <div class="card">
+            <h4>Appearance</h4>
+            <p>Choose a light or dark theme.</p>
+            {% include "partials/theme_toggle.html" %}
+          </div>
+          <div class="card">
+            <h4>Your data</h4>
+            <p>Uploaded PDFs and their search index are kept only in this browser. Clearing removes them from this device.</p>
+            <dl id="storageInfo"><dt>Documents</dt><dd>–</dd></dl>
+            <div class="row" style="margin-top:14px"><button class="btn danger" id="clearAll"><svg class="ic"><use href="#i-trash"/></svg>Remove all documents</button></div>
+          </div>
+          <div class="card">
+            <h4>AI models</h4>
+            <dl id="modelInfo"><dt>Answers</dt><dd>–</dd><dt>Embeddings</dt><dd>–</dd></dl>
+          </div>
+          <div class="card">
+            <h4>Account</h4>
+            <p>Signed in as <b>{{ user }}</b></p>
+            <form method="post" action="/logout"><button class="btn"><svg class="ic"><use href="#i-logout"/></svg>Sign out</button></form>
+          </div>
+        </section>
+
+        <!-- ================= ABOUT ================= -->
+        <section class="view" data-view="about" hidden>
+          <h1 class="page-title">About StudyMate</h1>
+          <p class="page-sub">AI-Powered Learning Management System Chatbot using Retrieval-Augmented Generation (RAG)</p>
+          <div class="card">
+            <h4>How it works</h4>
+            <ol class="flow">
+              <li>Your PDF's text is extracted in the browser and split into overlapping chunks.</li>
+              <li>Each chunk is turned into a 768-dimensional embedding with Google Gemini.</li>
+              <li>Chunks and embeddings are stored in your browser (IndexedDB), forming the vector store.</li>
+              <li>A question is embedded the same way; the most similar chunks are found by cosine similarity.</li>
+              <li>Gemini writes an answer using only those passages, citing each one with its page number.</li>
+            </ol>
+          </div>
+          <div class="card">
+            <h4>Project</h4>
+            <p>B.Tech Project-I · Department of Computer Science Engineering · Delhi Technological University · AY 2026-27</p>
+            <div class="team">
+              <div><b>Kartik Sama</b><span>23/CS/213</span></div>
+              <div><b>Kartikey</b><span>23/CS/215</span></div>
+              <div><b>Kislay Garg</b><span>23/CS/218</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <h4>Aligned with</h4>
+            <p style="margin:0">SDG 4 — Quality Education · SDG 9 — Industry, Innovation and Infrastructure</p>
+          </div>
+        </section>
       </div>
     </div>
-    <form id="chatForm" class="composer">
-      <textarea id="question" rows="1" placeholder="e.g. Explain normalization with an example" required></textarea>
-      <button type="submit" id="sendBtn">Ask</button>
-    </form>
+
+    <div class="composer-wrap" id="composerWrap">
+      <form id="chatForm" class="composer">
+        <label class="round" for="fileInput" title="Upload PDFs" aria-label="Upload PDFs"><svg class="ic"><use href="#i-clip"/></svg></label>
+        <textarea id="question" rows="1" placeholder="Ask about your PDFs…" required></textarea>
+        <button type="submit" class="round send" id="sendBtn" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
+      </form>
+    </div>
   </main>
 </div>
+
+<template id="avatarTpl"><div class="avatar">{% with mid="tpl", cls="" %}{% include "partials/mascot.html" %}{% endwith %}</div></template>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

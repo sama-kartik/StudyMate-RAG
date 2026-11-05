@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in – StudyMate</title>
+  {% include "partials/head.html" %}
+</head>
+<body>
+{% include "partials/icons.html" %}
+<main class="auth">
+  {% include "partials/theme_toggle.html" %}
+  <div class="auth-card" style="margin-top:80px">
+    {% with mid="login", cls="" %}{% include "partials/mascot.html" %}{% endwith %}
+    <h1>Study<span class="grad">Mate</span></h1>
+    <p class="sub">Your AI Study Assistant — sign in to continue</p>
+
+    {% if error %}
+      <div class="alert" role="alert"><svg class="ic"><use href="#i-alert"/></svg>{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/login" id="loginForm" novalidate>
+      <div class="field">
+        <label for="email">Email</label>
+        <div class="input">
+          <svg class="ic"><use href="#i-mail"/></svg>
+          <input id="email" name="email" type="email" autocomplete="username" required
+                 placeholder="you@example.com" value="{{ email }}" {% if not email %}autofocus{% endif %}>
+        </div>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <div class="input">
+          <svg class="ic"><use href="#i-lock"/></svg>
+          <input id="password" name="password" type="password" autocomplete="current-password" required
+                 placeholder="••••••••" {% if email %}autofocus{% endif %}>
+          <button type="button" id="togglePw" aria-label="Show password"><svg class="ic"><use href="#i-eye"/></svg></button>
+        </div>
+      </div>
+      <label class="remember"><input type="checkbox" name="remember" value="1" checked> Keep me signed in for 7 days</label>
+      <button class="btn primary block" id="submitBtn">Sign in</button>
+    </form>
+    <p class="auth-foot">Learn Smarter, Not Harder ⚡</p>
+  </div>
+</main>
+<script>
+  document.getElementById("togglePw").addEventListener("click", function () {
+    var pw = document.getElementById("password");
+    var show = pw.type === "password";
+    pw.type = show ? "text" : "password";
+    this.setAttribute("aria-label", show ? "Hide password" : "Show password");
+  });
+  document.getElementById("loginForm").addEventListener("submit", function () {
+    var b = document.getElementById("submitBtn");
+    b.disabled = true; b.textContent = "Signing in…";
+  });
+</script>
+</body>
+</html>

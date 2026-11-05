@@ -36,7 +36,7 @@ no external database is used.
 | Embeddings | Google `gemini-embedding-2` (768 dimensions, unit-normalised) |
 | Vector store and search | IndexedDB + cosine similarity (`public/static/app.js`; same algorithm in `rag/search.py`) |
 | Answer generation | Google Gemini (`gemini-3.8-flash`, with automatic fallback models) |
-| Web app | Flask (`app.py`), HTML/CSS/JavaScript (`templates/`, `public/static/`) |
+| Web app | Flask (`app.py`) with single-user login (`rag/auth.py`), HTML/CSS/JavaScript (`templates/`, `public/static/`) |
 | Evaluation | `eval/evaluate.py`: Hit@k, MRR, relevance, faithfulness, attribution, latency |
 
 **Fallback models:** if Gemini's main model is overloaded, rate-limited or slow,
@@ -62,11 +62,27 @@ billing for the API key in Google AI Studio.
    `.env.example` to `.env`, and paste the key into it.
 4. Run `python app.py` and open <http://127.0.0.1:5000>.
 
+## Login
+
+The app has a single login. Credentials are read from environment variables, never
+from the code (this repository is public):
+
+| Variable | |
+|---|---|
+| `APP_USER_EMAIL` | The login email |
+| `APP_PASSWORD` | The password (as an encrypted Vercel environment variable), **or** |
+| `APP_PASSWORD_HASH` | a password hash, e.g. in a local `.env` (command in `.env.example`) |
+| `SECRET_KEY` | Optional; signs the session cookie (derived from the other secrets if unset) |
+
+Everything except the login page requires signing in; sessions last 7 days when
+"Keep me signed in" is ticked.
+
 ## Deploy on Vercel
 
 1. Import this GitHub repository at <https://vercel.com/new>. Vercel detects Flask
    automatically, and no build settings are needed.
-2. Under **Settings → Environment Variables**, add `GEMINI_API_KEY` with your key.
+2. Open your **project's** **Settings → Environment Variables** (not the team's
+   Shared variables) and add `GEMINI_API_KEY`, `APP_USER_EMAIL` and `APP_PASSWORD`.
 3. Go to **Deployments**, open the **⋯** menu on the latest deployment, and click **Redeploy**.
 
 Every `git push` to `main` redeploys automatically. `vercel.json` allows requests

@@ -1,0 +1,24 @@
+<div class="theme-toggle" role="group" aria-label="Theme">
+  <button type="button" data-theme-set="light" aria-label="Light theme"><svg class="ic"><use href="#i-sun"/></svg></button>
+  <button type="button" data-theme-set="dark" aria-label="Dark theme"><svg class="ic"><use href="#i-moon"/></svg></button>
+</div>
+<script>
+  /* Theme toggle (works on every page, including login). */
+  (function () {
+    function apply(t) {
+      document.documentElement.setAttribute("data-theme", t);
+      document.querySelectorAll("[data-theme-set]").forEach(function (b) {
+        b.setAttribute("aria-pressed", String(b.getAttribute("data-theme-set") === t));
+      });
+      try { localStorage.setItem("studymate-theme", t); } catch (e) {}
+    }
+    if (!window.__themeBound) {
+      window.__themeBound = true;
+      document.addEventListener("click", function (e) {
+        var b = e.target.closest("[data-theme-set]");
+        if (b) apply(b.getAttribute("data-theme-set"));
+      });
+    }
+    apply(document.documentElement.getAttribute("data-theme") || "dark");
+  })();
+</script>
