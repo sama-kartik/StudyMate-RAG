@@ -24,7 +24,7 @@ MAX_PAGES_PER_REQUEST = 25
 @app.errorhandler(LLMError)
 def handle_llm_error(e):
     status = 429 if e.status == 429 else 502
-    return jsonify(error=str(e)), status
+    return jsonify(error=str(e), daily_quota=e.daily_quota), status
 
 
 @app.errorhandler(ValueError)
@@ -88,11 +88,25 @@ def answer():
     return jsonify(pipeline.answer(q, passages))
 
 
-@app.post("/api/summary")
-def summary():
+@app.post("/api/summary/section")
+def summary_section():
     body = _body()
-    chunks = [{"page": int(c["page"]), "text": str(c["text"])} for c in (body.get("chunks") or [])]
-    return jsonify(pipeline.summarise(str(body.get("source", "")), chunks))
+    pages = [{"page": int(p["page"]), "text": str(p["text"])} for p in (body.get("pages") or [])]
+    if not pages:
+        raise ValueError("Send {source, pages: [{page, text}]}.")
+    return jsonify(pipeline.summarise_section(str(body.get("source", "")),
+                                              pages[0]["page"], pages[-1]["page"], pages))
+
+
+@app.post("/api/summary/overview")
+def summary_overview():
+    body = _body()
+    sections = [{"start_page": int(s["start_page"]), "end_page": int(s["end_page"]),
+                 "notes": str(s["notes"])} for s in (body.get("sections") or [])]
+    if not sections:
+        raise ValueError("Send {source, total_pages, sections: [...]}.")
+    return jsonify(pipeline.summarise_overview(str(body.get("source", "")),
+                                               int(body.get("total_pages", 0)), sections))
 
 
 if __name__ == "__main__":

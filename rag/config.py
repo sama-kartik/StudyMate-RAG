@@ -13,7 +13,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Answer generation: tried in order; later models are used when earlier ones are busy.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 GEMINI_FALLBACK_MODELS = [m.strip() for m in os.getenv(
-    "GEMINI_FALLBACK_MODELS", "gemini-3.5-flash,gemini-flash-lite-latest,gemini-flash-latest,gemini-3.5-flash-lite"
+    "GEMINI_FALLBACK_MODELS", "gemini-3.7-flash,gemini-3.5-flash,gemini-3-flash-preview,gemini-flash-latest,"
+    "gemini-flash-lite-latest,gemini-3.5-flash-lite,gemini-3.1-flash-lite"
 ).split(",") if m.strip()]
 
 # Embeddings. Changing either value makes previously stored vectors incompatible,

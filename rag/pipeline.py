@@ -6,7 +6,8 @@ The vector store itself lives in the user's browser (IndexedDB, see public/stati
             -> browser stores chunks and vectors
   question: embed_query() -> browser ranks its stored chunks by cosine similarity
             -> answer() sends the top passages to Gemini
-  summary:  browser sends the document's chunks -> summarise()
+  summary:  browser splits the document into sections -> summarise_section() for
+            each -> summarise_overview() over all section notes
 """
 import time
 from typing import Dict, List
@@ -28,7 +29,8 @@ SUMMARY_SYSTEM = (
 )
 
 MAX_PASSAGES = 10
-MAX_SUMMARY_CHARS = 60000
+MAX_SECTION_CHARS = 16000   # one summary section (the browser sends ~10,000)
+MAX_OVERVIEW_CHARS = 80000  # all section notes together
 
 
 def index_pages(source: str, pages: List[Dict]) -> List[Dict]:
@@ -63,7 +65,8 @@ def answer(question: str, passages: List[Dict]) -> Dict:
                           "Try rephrasing, or upload the relevant notes first.",
                 "sources": [], "timings": {"generation": 0.0}}
     t0 = time.perf_counter()
-    text = generate(_build_prompt(question, passages), system=ANSWER_SYSTEM)
+    text = generate(_build_prompt(question, passages), system=ANSWER_SYSTEM,
+                    timeout_s=40, budget_s=100)
     sources = [{"n": i, "source": p["source"], "page": p["page"],
                 "score": round(float(p.get("score", 0)), 4), "excerpt": p["text"][:300]}
                for i, p in enumerate(passages, start=1)]
@@ -71,25 +74,61 @@ def answer(question: str, passages: List[Dict]) -> Dict:
             "timings": {"generation": round(time.perf_counter() - t0, 3)}}
 
 
-def summarise(source: str, chunks: List[Dict]) -> Dict:
-    """chunks: the document's chunks [{page, text}] in page order."""
-    if not chunks:
-        raise ValueError(f"Document '{source}' has no text to summarise.")
-    # Gemini's large context lets us send most notes whole. Very long books are
-    # sampled evenly so every part of the document is still represented.
-    total = sum(len(c["text"]) for c in chunks)
-    if total > MAX_SUMMARY_CHARS:
-        keep = max(1, int(len(chunks) * MAX_SUMMARY_CHARS / total))
-        stride = len(chunks) / keep
-        chunks = [chunks[int(i * stride)] for i in range(keep)]
-    body = "\n".join(f"(p{c['page']}) {c['text']}" for c in chunks)[:MAX_SUMMARY_CHARS]
+# ---------------------------------------------------------------------------
+# Summaries: map-reduce. The browser splits the document into sections of a few
+# pages; each section gets detailed notes (map), then one short call writes the
+# overview and key takeaways from those notes (reduce). Every call stays small,
+# so long PDFs are covered completely and no request runs into a timeout.
+# ---------------------------------------------------------------------------
 
-    prompt = (
-        f"Document: {source}\n\n{body}\n\n"
-        "Write a revision summary with:\n"
-        "1. A 2-3 sentence overview.\n"
-        "2. Key topics as headed bullet points (mention page numbers like (p4)).\n"
-        "3. Important definitions/formulas, if any.\n"
-        "Use Markdown."
-    )
-    return {"source": source, "summary": generate(prompt, system=SUMMARY_SYSTEM, temperature=0.3)}
+SECTION_PROMPT = """Below is the text of pages {start}-{end} of "{source}".
+Each page begins with a marker like [Page 4].
+
+{body}
+
+Write detailed revision notes for THESE PAGES ONLY, in Markdown:
+- Follow the order of the material. Give every question, topic or heading its own
+  "### " heading that names it clearly (e.g. "### Q.2 Causes of Poverty in India").
+- Under each heading, explain the content in bullet points: all key points,
+  definitions, causes/effects, types, examples, figures and statistics. Keep
+  numbered lists from the source (e.g. "10 causes") complete — do not drop items.
+- Bold important terms. Use a small table when the source compares things.
+- After each heading's bullets, add the page it comes from in italics, e.g. *(Page 4)*.
+- Be thorough: a student should be able to revise from these notes without the PDF.
+  Do not add facts that are not in the text. Do not write an introduction or conclusion.
+"""
+
+OVERVIEW_PROMPT = """These are section-by-section revision notes for "{source}" ({pages} pages):
+
+{notes}
+
+Using only these notes, write in Markdown:
+## Overview
+A 4-6 sentence paragraph explaining what the document covers and its main argument.
+
+## Topics covered
+A bullet list of every main topic/question in order, each with its pages, e.g.
+"- **Q.1 Meaning of economic development** — Pages 1-2".
+
+## Key takeaways
+6-10 bullets with the most important points to remember for an exam.
+"""
+
+
+def summarise_section(source: str, start_page: int, end_page: int, pages: List[Dict]) -> Dict:
+    """pages: [{page, text}] for one section of the document."""
+    body = "\n\n".join(f"[Page {p['page']}]\n{p['text']}" for p in pages if p["text"].strip())
+    if not body:
+        raise ValueError("This section has no text.")
+    prompt = SECTION_PROMPT.format(source=source, start=start_page, end=end_page,
+                                   body=body[:MAX_SECTION_CHARS])
+    notes = generate(prompt, system=SUMMARY_SYSTEM, temperature=0.3, timeout_s=70, budget_s=130)
+    return {"start_page": start_page, "end_page": end_page, "notes": notes}
+
+
+def summarise_overview(source: str, total_pages: int, sections: List[Dict]) -> Dict:
+    """sections: [{start_page, end_page, notes}] from summarise_section()."""
+    notes = "\n\n".join(f"## Pages {s['start_page']}-{s['end_page']}\n{s['notes']}" for s in sections)
+    prompt = OVERVIEW_PROMPT.format(source=source, pages=total_pages, notes=notes[:MAX_OVERVIEW_CHARS])
+    return {"overview": generate(prompt, system=SUMMARY_SYSTEM, temperature=0.3,
+                                 timeout_s=60, budget_s=130)}

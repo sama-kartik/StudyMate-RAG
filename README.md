@@ -43,6 +43,12 @@ no external database is used.
 the next model in `GEMINI_FALLBACK_MODELS` is tried automatically, so the app
 keeps answering during demand spikes.
 
+**Free-tier limits:** Google's free Gemini tier allows about 20 requests per day
+per model. Spreading requests over several models gives roughly 150 per day; a
+summary of a 10-page PDF uses about 6 requests. Models whose daily quota is used
+up are skipped until it resets (midnight US Pacific time). For heavier use, enable
+billing for the API key in Google AI Studio.
+
 ## Run locally
 
 1. Install Python 3.9 or newer.
@@ -73,7 +79,10 @@ up to 60 seconds, so slow Gemini responses aren't cut off.
 - **Ask** any question. Press Enter to send and Shift+Enter for a new line.
   Expand *Sources* under an answer to see the exact passages and similarity scores.
 - **Search in** limits retrieval to one document.
-- **Summarise** produces a revision summary of a document.
+- **Summarise** writes complete revision notes for a document. The PDF is split into
+  sections of a few pages; each section gets detailed notes (every question/topic,
+  definitions, lists, examples, with page numbers), then an overview, a list of topics
+  and key takeaways are added. The result can be downloaded as a Markdown file.
 
 Scanned PDFs (images only) have no extractable text and are rejected.
 
@@ -117,7 +126,7 @@ Set these in `.env` locally, or in Vercel's Environment Variables when hosted.
 |---|---|---|
 | `GEMINI_API_KEY` | (none) | Required |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Main answer model |
-| `GEMINI_FALLBACK_MODELS` | `gemini-3.5-flash,gemini-flash-lite-latest,…` | Tried in order when the main model is busy |
+| `GEMINI_FALLBACK_MODELS` | `gemini-3.7-flash,gemini-3.5-flash,…` | Tried in order when the main model is busy |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `gemini-embedding-2` / 768 | Changing these requires re-uploading PDFs |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | 800 / 150 | Characters |
 | `TOP_K` | 5 | Passages retrieved per question |

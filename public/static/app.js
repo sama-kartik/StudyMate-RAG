@@ -11,7 +11,7 @@
 const $ = (id) => document.getElementById(id);
 const messages = $("messages");
 const PAGES_PER_REQUEST = 10;
-const SUMMARY_CHARS = 60000;
+const SECTION_CHARS = 10000; // characters of PDF text per summary section
 
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -44,7 +44,7 @@ async function api(url, body, onWait) {
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok) return data;
-    if (res.status === 429 && attempt < 4) {
+    if (res.status === 429 && !data.daily_quota && attempt < 4) {
       const wait = 5 * (attempt + 1);
       if (onWait) onWait(wait);
       await sleep(wait * 1000);
@@ -226,23 +226,112 @@ function search(queryVec, scope) {
   return hits.slice(0, CONFIG.top_k);
 }
 
-/* ---------- summaries ---------- */
+/* ---------- summaries (map-reduce: detailed notes per section, then an overview) ---------- */
+
+/** Rebuild each page's text from its chunks, dropping the overlap between neighbours. */
+function pagesFromChunks(chunks) {
+  const byPage = new Map();
+  for (const c of [...chunks].sort((a, b) => a.page - b.page || a.chunk - b.chunk)) {
+    const prev = byPage.get(c.page);
+    if (prev === undefined) { byPage.set(c.page, c.text); continue; }
+    let k = Math.min(prev.length, c.text.length, 400);
+    while (k > 20 && !prev.endsWith(c.text.slice(0, k))) k--;
+    byPage.set(c.page, prev + " " + (k > 20 ? c.text.slice(k) : c.text));
+  }
+  return [...byPage].map(([page, text]) => ({ page, text: text.trim() }));
+}
+
+/** Group consecutive pages into sections of about SECTION_CHARS characters. */
+function makeSections(pages) {
+  const sections = [];
+  let cur = [], size = 0;
+  for (const p of pages) {
+    if (cur.length && size + p.text.length > SECTION_CHARS) { sections.push(cur); cur = []; size = 0; }
+    cur.push(p); size += p.text.length;
+  }
+  if (cur.length) sections.push(cur);
+  return sections;
+}
+
+/** Run async tasks with at most `limit` in flight, keeping results in order. */
+async function runLimited(tasks, limit) {
+  const results = new Array(tasks.length);
+  let next = 0;
+  async function worker() {
+    while (next < tasks.length) { const i = next++; results[i] = await tasks[i](); }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+  return results;
+}
+
+/** Call the API, retrying once more if Gemini was busy (502/503). */
+async function apiPatient(url, body, onWait) {
+  try { return await api(url, body, onWait); }
+  catch (e) {
+    if (/quota for today/.test(e.message)) throw e; // retrying won't help until tomorrow
+    if (onWait) onWait(10);
+    await sleep(10000);
+    return api(url, body, onWait);
+  }
+}
+
+const pageRange = (a, b) => (a === b ? `Page ${a}` : `Pages ${a}–${b}`);
+
 async function summarise(source) {
+  const doc = docs.get(source);
   addMessage("user", `Summarise <b>${esc(source)}</b>`);
   const bubble = addMessage("bot", '<span class="typing">Reading the document…</span>');
-  try {
-    let chunks = docs.get(source).chunks.map((c) => ({ page: c.page, text: c.text }));
-    const total = chunks.reduce((n, c) => n + c.text.length, 0);
-    if (total > SUMMARY_CHARS) { // sample evenly so the request stays small
-      const keep = Math.max(1, Math.floor(chunks.length * SUMMARY_CHARS / total));
-      const stride = chunks.length / keep;
-      chunks = Array.from({ length: keep }, (_, i) => chunks[Math.floor(i * stride)]);
+  const sections = makeSections(pagesFromChunks(doc.chunks));
+  const notes = new Array(sections.length).fill(null);
+  let status = "";
+  const draw = () => {
+    const done = notes.filter((n) => n !== null).length;
+    let html = `<div class="progress">${esc(status || `Writing detailed notes: ${done} of ${sections.length} sections done…`)}</div>`;
+    html += md(notes.filter((n) => n !== null && !n.error).map((n) => n.notes).join("\n\n"));
+    bubble.innerHTML = html;
+  };
+  draw();
+
+  await runLimited(sections.map((pages, i) => async () => {
+    const range = pageRange(pages[0].page, pages[pages.length - 1].page);
+    try {
+      notes[i] = await apiPatient("/api/summary/section", { source, pages },
+        () => { status = `Gemini is busy — retrying ${range}…`; draw(); });
+    } catch (e) {
+      notes[i] = { error: e.message, start_page: pages[0].page, end_page: pages[pages.length - 1].page,
+                   notes: `> ⚠️ Could not summarise ${range}: ${e.message}` };
     }
-    const r = await api("/api/summary", { source, chunks });
-    bubble.innerHTML = md(r.summary);
-  } catch (e) {
-    bubble.innerHTML = `<span class="error">${esc(e.message)}</span>`;
+    status = "";
+    draw();
+  }), 2); // 2 at a time keeps within Gemini's per-minute limits
+
+  const ok = notes.filter((n) => !n.error);
+  let overview = "";
+  if (ok.length) {
+    status = "Writing the overview and key takeaways…";
+    draw();
+    try {
+      overview = (await apiPatient("/api/summary/overview",
+        { source, total_pages: doc.pages, sections: ok })).overview;
+    } catch (e) {
+      overview = `> ⚠️ Could not write the overview: ${e.message}`;
+    }
   }
+
+  const full = `# Summary: ${source}\n\n${overview}\n\n## Detailed notes\n\n` +
+               notes.map((n) => n.notes).join("\n\n");
+  bubble.innerHTML = md(full);
+  const failed = notes.length - ok.length;
+  if (failed) {
+    bubble.insertAdjacentHTML("afterbegin",
+      `<div class="error">${failed} section(s) could not be summarised because Gemini was busy. Click Summarise again to retry.</div>`);
+  }
+  const a = document.createElement("a");
+  a.className = "download";
+  a.textContent = "Download summary (.md)";
+  a.download = source.replace(/\.pdf$/i, "") + " - summary.md";
+  a.href = URL.createObjectURL(new Blob([full], { type: "text/markdown" }));
+  bubble.appendChild(a);
 }
 
 /* ---------- chat ---------- */
