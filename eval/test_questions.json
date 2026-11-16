@@ -2,26 +2,117 @@
   {
     "question": "What is the problem statement of the project?",
     "source": "AI_LMS_RAG_Project_Synopsis.pdf",
-    "pages": [1]
+    "pages": [
+      1
+    ]
   },
   {
     "question": "Which Sustainable Development Goals does the project align with?",
     "source": "AI_LMS_RAG_Project_Synopsis.pdf",
-    "pages": [2]
+    "pages": [
+      2
+    ]
   },
   {
     "question": "What hardware is required to run the prototype?",
     "source": "AI_LMS_RAG_Project_Synopsis.pdf",
-    "pages": [2]
+    "pages": [
+      2
+    ]
   },
   {
     "question": "How will the system be evaluated?",
     "source": "AI_LMS_RAG_Project_Synopsis.pdf",
-    "pages": [1, 2]
+    "pages": [
+      1,
+      2
+    ]
   },
   {
     "question": "Which libraries are used for PDF extraction and vector search?",
     "source": "AI_LMS_RAG_Project_Synopsis.pdf",
-    "pages": [2]
+    "pages": [
+      2
+    ]
+  },
+  {
+    "question": "What is the difference between economic growth and economic development?",
+    "source": "HU-407_Assignment_All_Answers.pdf",
+    "pages": [
+      1,
+      2
+    ]
+  },
+  {
+    "question": "What factors determine the economic development of a country?",
+    "source": "HU-407_Assignment_All_Answers.pdf",
+    "pages": [
+      1,
+      2
+    ]
+  },
+  {
+    "question": "Define human capital formation.",
+    "source": "HU-407_Assignment_All_Answers.pdf",
+    "pages": [
+      3,
+      4
+    ]
+  },
+  {
+    "question": "What are the main problems of human capital formation in India?",
+    "source": "HU-407_Assignment_All_Answers.pdf",
+    "pages": [
+      3,
+      4
+    ]
+  },
+  {
+    "question": "What is absolute poverty?",
+    "source": "HU-407_Assignment_All_Answers.pdf",
+    "pages": [
+      5,
+      6
+    ]
+  },
+  {
+    "question": "How is relative poverty different from absolute poverty?",
+    "source": "HU-407_Assignment_All_Answers.pdf",
+    "pages": [
+      5,
+      6
+    ]
+  },
+  {
+    "question": "What are the objectives of the National Population Policy 2000?",
+    "source": "HU-407_Assignment_All_Answers.pdf",
+    "pages": [
+      7,
+      8
+    ]
+  },
+  {
+    "question": "What are the socio-demographic goals of the National Population Policy 2000?",
+    "source": "HU-407_Assignment_All_Answers.pdf",
+    "pages": [
+      7,
+      8
+    ]
+  },
+  {
+    "question": "How has urbanisation in India changed since 1901?",
+    "source": "HU-407_Assignment_All_Answers.pdf",
+    "pages": [
+      9,
+      10
+    ]
+  },
+  {
+    "question": "What problems are associated with urbanisation in India?",
+    "source": "HU-407_Assignment_All_Answers.pdf",
+    "pages": [
+      9,
+      10
+    ]
   }
 ]
