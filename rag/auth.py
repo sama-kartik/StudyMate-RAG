@@ -16,6 +16,8 @@ from functools import wraps
 from flask import jsonify, redirect, request, session, url_for
 from werkzeug.security import check_password_hash
 
+from . import config  # noqa: F401  (loads .env before the variables below are read)
+
 USER_EMAIL = os.getenv("APP_USER_EMAIL", "").strip().lower()
 _PASSWORD_HASH = os.getenv("APP_PASSWORD_HASH", "")
 _PASSWORD = os.getenv("APP_PASSWORD", "")
