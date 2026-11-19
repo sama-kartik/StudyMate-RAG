@@ -361,3 +361,34 @@ a { color: var(--accent-text); }
 .player-frame { position: relative; aspect-ratio: 16 / 9; background: #000; }
 .player-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 @media (max-width: 900px) { .yt-row .btn { padding: 9px 12px; } }
+
+.opt { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.opt input { accent-color: var(--accent); width: 15px; height: 15px; }
+.opt span { color: var(--faint); }
+
+/* ---------- viva ---------- */
+.viva-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; }
+.viva-grid label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.viva-grid .select { max-width: none; width: 100%; }
+.note-small { font-size: 13px; color: var(--faint); margin: 10px 0 0; }
+.viva-progress { display: flex; justify-content: space-between; margin: 0 0 12px; font-size: 14px; color: var(--muted); font-weight: 600; }
+.viva-q .bubble { font-size: 17px; }
+.examiner-label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--accent-text); font-weight: 700; margin-bottom: 4px; }
+.btn.ghost { margin-top: 10px; background: transparent; }
+.answer-card { margin-top: 16px; }
+.answer-card textarea { width: 100%; resize: vertical; min-height: 110px; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text); font-size: 15px; outline: 0; }
+.answer-card textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.answer-card .row { margin-top: 12px; }
+.btn.mic.on { background: #ff4e5b; color: #fff; border-color: #ff4e5b; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 8px rgba(255, 78, 91, .25); } }
+.viva-fb { margin-top: 16px; }
+.score { display: inline-grid; place-items: center; width: 64px; height: 64px; border-radius: 50%; font-size: 22px; font-weight: 800; color: #fff; float: right; margin-left: 12px; }
+.score.good { background: #1f9d6b; } .score.mid { background: #c98a12; } .score.low { background: #d6334a; }
+.fb-h { font-weight: 700; margin: 12px 0 4px; }
+.fb-h.ok { color: var(--ok); } .fb-h.miss { color: var(--danger); }
+.viva-actions { margin-top: 16px; }
+.report-table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+.report-table th, .report-table td { border-bottom: 1px solid var(--border); padding: 8px 6px; text-align: left; vertical-align: top; }
+.big-score { font-size: 54px; font-weight: 800; color: var(--accent); line-height: 1; }
+@media (max-width: 900px) { .viva-grid { grid-template-columns: 1fr; } }

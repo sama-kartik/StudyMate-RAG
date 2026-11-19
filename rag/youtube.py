@@ -67,7 +67,29 @@ def video_info(video_id: str) -> Dict:
         raise ValueError("That video can't be used. Check the link, and make sure the video is public "
                          "(private and unlisted videos are not supported).")
     return {"video_id": video_id, "url": watch, "title": data.get("title") or "YouTube video",
-            "author": data.get("author_name") or ""}
+            "author": data.get("author_name") or "", "duration": _duration(watch)}
+
+
+def _duration(watch_url: str) -> Optional[int]:
+    """Video length in seconds from the watch page, or None if YouTube won't say.
+
+    Knowing the length lets the browser watch all windows in parallel. Cloud hosts
+    are sometimes served a consent/bot page instead; the caller then falls back to
+    watching windows until one reports the end of the video.
+    """
+    req = urllib.request.Request(watch_url, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9"})
+    try:
+        with urllib.request.urlopen(req, timeout=6) as r:
+            html = r.read(3_000_000).decode("utf-8", "ignore")
+    except Exception:
+        return None
+    m = re.search(r'"approxDurationMs":"(\d+)"', html) or re.search(r'"lengthSeconds":"(\d+)"', html)
+    if not m:
+        return None
+    v = int(m.group(1))
+    return v // 1000 if "approxDurationMs" in m.group(0) else v
 
 
 def fmt_ts(seconds: int) -> str:

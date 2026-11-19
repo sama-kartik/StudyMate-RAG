@@ -19,7 +19,7 @@ from .config import (EMBEDDING_DIM, EMBEDDING_MODEL, GEMINI_API_KEY,
                      GEMINI_FALLBACK_MODELS, GEMINI_MODEL)
 
 log = logging.getLogger(__name__)
-_POOL = ThreadPoolExecutor(max_workers=8)
+_POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="gemini")
 # Silence the SDK's harmless "non-text parts (thought_signature)" notice.
 logging.getLogger("google_genai.types").setLevel(logging.ERROR)
 _RETRYABLE = {404, 429, 500, 503, 504}

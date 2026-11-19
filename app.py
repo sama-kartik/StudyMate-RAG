@@ -11,7 +11,7 @@ from datetime import timedelta
 
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
-from rag import auth, pipeline, youtube
+from rag import auth, pipeline, vision, viva, youtube
 from rag.config import EMBEDDING_DIM, EMBEDDING_MODEL, GEMINI_MODEL, TOP_K
 from rag.llm import LLMError
 from rag.search import MIN_SCORE
@@ -157,6 +157,39 @@ def summary_overview():
     return jsonify(pipeline.summarise_overview(str(body.get("source", "")),
                                                int(body.get("total_pages", 0)), sections,
                                                kind=str(body.get("kind") or "pdf")))
+
+
+@app.post("/api/vision/pages")
+def vision_pages():
+    body = _body()
+    pages = body.get("pages") or []
+    if not isinstance(pages, list) or not pages:
+        raise ValueError("Send {source, pages: [{page, image, mode, text}]}.")
+    return jsonify(pages=vision.read_pages(str(body.get("source", "")), pages))
+
+
+def _passages(body):
+    return [{"source": str(p["source"]), "page": int(p["page"]), "text": str(p["text"])[:3000],
+             "kind": "video" if p.get("kind") == "video" else "pdf"}
+            for p in (body.get("passages") or [])[:8]]
+
+
+@app.post("/api/viva/question")
+def viva_question():
+    body = _body()
+    follow = body.get("follow_up") if isinstance(body.get("follow_up"), dict) else None
+    return jsonify(viva.ask(_passages(body), str(body.get("difficulty") or "medium"),
+                            [str(q) for q in (body.get("previous") or [])], follow))
+
+
+@app.post("/api/viva/grade")
+def viva_grade():
+    body = _body()
+    q = str(body.get("question") or "").strip()
+    if not q:
+        raise ValueError("Missing question.")
+    return jsonify(viva.grade(q, str(body.get("answer") or ""), _passages(body),
+                              str(body.get("difficulty") or "medium")))
 
 
 @app.post("/api/youtube/info")

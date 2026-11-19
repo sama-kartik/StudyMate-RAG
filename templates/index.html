@@ -20,6 +20,7 @@
     <nav class="nav" aria-label="Main">
       <button class="nav-btn" data-view-link="home"><svg class="ic"><use href="#i-home"/></svg>Home</button>
       <button class="nav-btn" data-view-link="documents"><svg class="ic"><use href="#i-file"/></svg>My Documents</button>
+      <button class="nav-btn" data-view-link="viva"><svg class="ic"><use href="#i-mic"/></svg>Viva Practice</button>
       <button class="nav-btn" data-view-link="settings"><svg class="ic"><use href="#i-settings"/></svg>Settings</button>
       <button class="nav-btn" data-view-link="about"><svg class="ic"><use href="#i-info"/></svg>About</button>
     </nav>
@@ -63,6 +64,7 @@
             <span>Click or drag and drop your files here</span>
             <div class="chips">Supports: PDF &nbsp;•&nbsp; Notes &nbsp;•&nbsp; Syllabus &nbsp;•&nbsp; Textbooks &nbsp;•&nbsp; YouTube lectures</div>
           </label>
+          <label class="opt"><input type="checkbox" id="readImages" checked> Read images, diagrams &amp; scanned pages with Gemini vision <span>(slower for picture-heavy PDFs)</span></label>
           <form id="ytForm" class="yt-row">
             <span class="yt-badge" aria-hidden="true"><svg class="ic"><use href="#i-play"/></svg></span>
             <input id="ytUrl" type="url" inputmode="url" placeholder="…or paste a YouTube lecture link" aria-label="YouTube lecture link" autocomplete="off">
@@ -89,6 +91,48 @@
           <h1 class="page-title">My Documents</h1>
           <p class="page-sub">Everything you've uploaded. Documents are stored privately in this browser.</p>
           <ul class="doc-list" data-doc-list></ul>
+        </section>
+
+        <!-- ================= VIVA ================= -->
+        <section class="view" data-view="viva" hidden>
+          <h1 class="page-title">Viva Practice</h1>
+          <p class="page-sub">Practise your oral exam. StudyMate asks questions from your own PDFs and lectures, listens to your answer, and grades it like an examiner — with follow-up questions when you miss something.</p>
+
+          <div class="card" id="vivaSetup">
+            <div class="viva-grid">
+              <label>Material<select id="vivaScope" class="select"></select></label>
+              <label>Questions<select id="vivaCount" class="select"><option>3</option><option selected>5</option><option>8</option></select></label>
+              <label>Difficulty<select id="vivaLevel" class="select"><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option></select></label>
+            </div>
+            <label class="opt"><input type="checkbox" id="vivaVoice" checked> Read questions aloud</label>
+            <div class="row" style="margin-top:14px"><button class="btn primary" id="vivaStart"><svg class="ic"><use href="#i-mic"/></svg>Start viva</button></div>
+            <p class="note-small" id="vivaHint"></p>
+          </div>
+
+          <div id="vivaSession" hidden>
+            <div class="viva-progress"><span id="vivaStep"></span><span id="vivaRunning"></span></div>
+            <div class="msg bot viva-q">
+              <div class="avatar">{% with mid="viva", cls="" %}{% include "partials/mascot.html" %}{% endwith %}</div>
+              <div class="bubble"><div class="examiner-label">Examiner</div><div id="vivaQuestion"></div>
+                <button class="btn ghost" id="vivaSpeak" type="button"><svg class="ic"><use href="#i-sound"/></svg>Hear again</button></div>
+            </div>
+            <div class="card answer-card">
+              <textarea id="vivaAnswer" rows="5" placeholder="Click “Speak answer” and talk, or type your answer here…"></textarea>
+              <div class="row">
+                <button class="btn mic" id="vivaMic" type="button"><svg class="ic"><use href="#i-mic"/></svg><span>Speak answer</span></button>
+                <button class="btn primary" id="vivaSubmit" type="button">Submit answer</button>
+                <button class="btn" id="vivaSkip" type="button">Skip</button>
+              </div>
+              <div id="vivaMicStatus" class="status"></div>
+            </div>
+            <div id="vivaFeedback"></div>
+            <div class="row viva-actions">
+              <button class="btn primary" id="vivaNext" type="button" hidden>Next question</button>
+              <button class="btn danger" id="vivaEnd" type="button">End viva</button>
+            </div>
+          </div>
+
+          <div id="vivaReport" hidden></div>
         </section>
 
         <!-- ================= SETTINGS ================= -->
@@ -129,6 +173,7 @@
               <li>Chunks and embeddings are stored in your browser (IndexedDB), forming the vector store.</li>
               <li>A question is embedded the same way; the most similar chunks are found by cosine similarity.</li>
               <li>Gemini writes an answer using only those passages, citing each one with its page number.</li>
+              <li>Scanned pages and diagrams are read with Gemini vision; Viva Practice uses the same material to ask, listen and grade.</li>
             </ol>
           </div>
           <div class="card">

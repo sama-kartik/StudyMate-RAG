@@ -110,13 +110,36 @@ up to 150 seconds, so slow Gemini responses (and video windows) aren't cut off.
   definitions, lists, examples, with page numbers), then an overview, a list of topics
   and key takeaways are added. The result can be downloaded as a Markdown file.
 
-Scanned PDFs (images only) have no extractable text and are rejected.
+### PDFs with images and scanned pages
+
+pdf.js detects pages that have no text layer (scans) and pages that contain
+pictures. Those pages are rendered to images and read by Gemini vision
+(`rag/vision.py`): scans are transcribed in full (tables as tables, formulas as
+text), and pictures on normal pages are described as `[Figure: …]` lines. The
+result is indexed like ordinary page text, so questions and summaries can use
+diagrams and scanned notes. The option **Read images, diagrams & scanned pages**
+under the upload box can be turned off for picture-heavy PDFs (scanned pages are
+always read).
+
+### Viva practice
+
+The **Viva Practice** page simulates an oral exam on your own material. StudyMate
+picks a random page or video moment, Gemini (as the examiner) asks a question —
+read aloud by the browser — and you answer by **speaking** (Web Speech API, live
+transcription; Chrome, Edge, Safari) or by typing. The answer is graded out of 10
+against the material (`rag/viva.py`): what you got right, what you missed (with
+citations to pages or video timestamps) and a model answer. A weak answer (≤ 5)
+triggers a **follow-up question** on the missed point, like a real examiner. At
+the end you get a score, a per-question table, topics to revise and a downloadable
+report.
 
 ### YouTube lectures
 
 Paste a YouTube link in the box under the upload area and click **Add video**.
 Gemini watches the lecture directly from the link (what is said *and* what is shown
-on slides or the board), five minutes at a time, and writes one note per 30 seconds.
+on slides or the board) in five-minute parts, **three parts in parallel**, and writes
+one note per 30 seconds. The video length is read from YouTube so every part can
+start at once.
 The notes are indexed like PDF pages, so you can ask questions across PDFs and
 videos together. Answers cite the moment, e.g. **▶ 10:49**: clicking a citation opens
 the video inside StudyMate at that second. **Summarise** works for videos too,
