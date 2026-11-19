@@ -61,8 +61,13 @@
             <svg class="ic"><use href="#i-cloud"/></svg>
             <strong>Upload PDFs</strong>
             <span>Click or drag and drop your files here</span>
-            <div class="chips">Supports: PDF &nbsp;•&nbsp; Notes &nbsp;•&nbsp; Syllabus &nbsp;•&nbsp; Textbooks</div>
+            <div class="chips">Supports: PDF &nbsp;•&nbsp; Notes &nbsp;•&nbsp; Syllabus &nbsp;•&nbsp; Textbooks &nbsp;•&nbsp; YouTube lectures</div>
           </label>
+          <form id="ytForm" class="yt-row">
+            <span class="yt-badge" aria-hidden="true"><svg class="ic"><use href="#i-play"/></svg></span>
+            <input id="ytUrl" type="url" inputmode="url" placeholder="…or paste a YouTube lecture link" aria-label="YouTube lecture link" autocomplete="off">
+            <button id="ytBtn" class="btn primary" type="submit">Add video</button>
+          </form>
           <div id="uploadStatus" class="status" aria-live="polite"></div>
 
           <div class="section-head">
@@ -119,7 +124,7 @@
           <div class="card">
             <h4>How it works</h4>
             <ol class="flow">
-              <li>Your PDF's text is extracted in the browser and split into overlapping chunks.</li>
+              <li>Your PDF's text is extracted in the browser and split into overlapping chunks. For a YouTube lecture, Gemini watches the video and writes timestamped notes, which are chunked the same way.</li>
               <li>Each chunk is turned into a 768-dimensional embedding with Google Gemini.</li>
               <li>Chunks and embeddings are stored in your browser (IndexedDB), forming the vector store.</li>
               <li>A question is embedded the same way; the most similar chunks are found by cosine similarity.</li>
@@ -153,6 +158,14 @@
   </main>
 </div>
 
+<div class="player" id="player" hidden role="dialog" aria-modal="true" aria-labelledby="playerTitle">
+  <div class="player-box">
+    <div class="player-head"><span id="playerTitle"></span>
+      <a id="playerOpen" target="_blank" rel="noopener" class="btn">Open on YouTube</a>
+      <button class="icon-btn" id="playerClose" aria-label="Close video">✕</button></div>
+    <div class="player-frame"><iframe id="playerFrame" title="Lecture video" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
+  </div>
+</div>
 <template id="avatarTpl"><div class="avatar">{% with mid="tpl", cls="" %}{% include "partials/mascot.html" %}{% endwith %}</div></template>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

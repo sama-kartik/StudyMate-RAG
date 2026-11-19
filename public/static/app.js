@@ -153,11 +153,15 @@ function renderDocs() {
     for (const d of sorted) {
       const li = document.createElement("li");
       li.className = "doc";
-      li.innerHTML = `<div class="doc-icon">${ico("file")}</div>
-        <div><div class="name">${esc(d.source)}</div>
-          <div class="meta">${d.pages} pages · ${d.chunks.length} chunks${d.builtIn ? " · built-in" : ""}</div></div>
-        <div class="actions"><button class="btn primary sum">${ico("spark")}Summarise</button>
-          ${d.builtIn ? "" : `<button class="btn danger del" aria-label="Remove ${esc(d.source)}">${ico("trash")}</button>`}</div>`;
+      const video = d.kind === "video";
+      const meta = video ? `YouTube${d.author ? " · " + esc(d.author) : ""} · ${fmtTs(d.duration || 0)} · ${d.chunks.length} chunks`
+                         : `${d.pages} pages · ${d.chunks.length} chunks${d.builtIn ? " · built-in" : ""}`;
+      li.innerHTML = `<div class="doc-icon${video ? " video" : ""}">${ico(video ? "play" : "file")}</div>
+        <div><div class="name">${video ? `<button class="linklike">${esc(d.source)}</button>` : esc(d.source)}</div>
+          <div class="meta">${meta}</div></div>`;
+      if (video) li.querySelector(".linklike").onclick = () => openPlayer(d.videoId, 0, d.source);
+      li.insertAdjacentHTML("beforeend", `<div class="actions"><button class="btn primary sum">${ico("spark")}Summarise</button>
+          ${d.builtIn ? "" : `<button class="btn danger del" aria-label="Remove ${esc(d.source)}">${ico("trash")}</button>`}</div>`);
       li.querySelector(".sum").onclick = () => summarise(d.source);
       if (!d.builtIn) li.querySelector(".del").onclick = () => removeDoc(d.source);
       list.appendChild(li);
@@ -169,6 +173,96 @@ function renderDocs() {
     <dt>Pages</dt><dd>${user.reduce((n, d) => n + d.pages, 0)}</dd>
     <dt>Chunks</dt><dd>${user.reduce((n, d) => n + d.chunks.length, 0)}</dd>`;
 }
+
+/* ---------- YouTube lectures ---------- */
+function fmtTs(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const mm = String(m).padStart(2, "0"), ss = String(s).padStart(2, "0");
+  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+/** Gemini watches the video in 10-minute windows and writes timestamped notes;
+ *  the notes are indexed like PDF pages whose "page" is the second in the video. */
+async function addVideo(url, line) {
+  line.textContent = "Checking the link…";
+  const info = await api("/api/youtube/info", { url });
+  const source = `${info.title} (YouTube)`;
+  const segments = [];
+  for (let start = 0; start < 3 * 3600;) {
+    line.textContent = `${info.title}: Gemini is watching from ${fmtTs(start)}… (${segments.length} notes so far)`;
+    const r = await apiPatient("/api/youtube/window", { video_id: info.video_id, start },
+      () => { line.textContent = `${info.title}: Gemini is busy, retrying from ${fmtTs(start)}…`; });
+    segments.push(...r.segments);
+    if (r.end || !(r.next > start)) break;
+    start = r.next;
+  }
+  if (!segments.length) throw new Error("Gemini couldn't read any content from this video.");
+  const pages = segments.map((g) => ({ page: g.t, text: `[${fmtTs(g.t)}] ${g.text}` }));
+  const chunks = [];
+  for (let i = 0; i < pages.length; i += 20) {
+    line.textContent = `${info.title}: indexing notes ${Math.min(i + 20, pages.length)} of ${pages.length}…`;
+    const r = await api("/api/index", { source, pages: pages.slice(i, i + 20) },
+      (s) => { line.textContent = `${info.title}: Gemini rate limit, retrying in ${s}s…`; });
+    chunks.push(...r.chunks);
+  }
+  const last = segments[segments.length - 1].t;
+  const doc = {
+    source, kind: "video", videoId: info.video_id, author: info.author, url: info.url,
+    duration: last + 30, pages: segments.length, model: CONFIG.embedding_model, dim: CONFIG.embedding_dim,
+    chunks: chunks.map((c) => ({ page: c.page, chunk: c.chunk, text: c.text, embedding: Float32Array.from(c.embedding) })),
+  };
+  await store.put(doc);
+  docs.set(source, { ...doc, builtIn: false });
+  return doc;
+}
+
+$("ytForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("ytUrl"), url = input.value.trim();
+  if (!url) return;
+  const btn = $("ytBtn"); btn.disabled = true;
+  const status = $("uploadStatus"); status.innerHTML = "";
+  const line = document.createElement("div"); status.appendChild(line);
+  try {
+    const d = await addVideo(url, line);
+    line.innerHTML = `<span class="ok">${ico("check")}</span> ${esc(d.source)}: ${fmtTs(d.duration)} watched, ${d.chunks.length} chunks — ready for questions`;
+    input.value = "";
+  } catch (err) {
+    line.innerHTML = `<span class="err">${ico("alert")} ${esc(err.message)}</span>`;
+  }
+  btn.disabled = false;
+  renderDocs();
+});
+
+/* in-app player that starts at the cited second */
+function openPlayer(videoId, t, title) {
+  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId || "")) return;
+  $("playerTitle").textContent = `${title || "Lecture"} — from ${fmtTs(t)}`;
+  $("playerFrame").src = `https://www.youtube-nocookie.com/embed/${videoId}?start=${Math.floor(t)}&autoplay=1&rel=0`;
+  $("playerOpen").href = `https://www.youtube.com/watch?v=${videoId}&t=${Math.floor(t)}s`;
+  $("player").hidden = false;
+}
+function closePlayer() { $("player").hidden = true; $("playerFrame").src = "about:blank"; }
+$("playerClose").addEventListener("click", closePlayer);
+$("player").addEventListener("click", (e) => { if (e.target === $("player")) closePlayer(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("player").hidden) closePlayer(); });
+
+document.addEventListener("click", (e) => {
+  const ts = e.target.closest(".ts");
+  if (ts) { openPlayer(ts.dataset.vid, +ts.dataset.t, ts.dataset.title); return; }
+  const cite = e.target.closest(".cite");
+  if (!cite) return;
+  const bubble = cite.closest(".bubble");
+  const src = (bubble._sources || []).find((s) => s.n === +cite.dataset.n);
+  if (src && src.kind === "video") { openPlayer(src.video_id, src.page, src.source); return; }
+  const det = bubble.querySelector("details.sources");
+  if (det) {
+    det.open = true;
+    const row = det.querySelector(`.src[data-n="${cite.dataset.n}"]`);
+    if (row) { row.scrollIntoView({ block: "center", behavior: "smooth" }); row.classList.add("flash"); setTimeout(() => row.classList.remove("flash"), 1200); }
+  }
+});
 
 /* ---------- PDF ingestion ---------- */
 async function extractPages(file) {
@@ -246,7 +340,10 @@ function search(queryVec, scope) {
     for (const c of d.chunks) {
       let s = 0;
       for (let i = 0; i < q.length; i++) s += q[i] * c.embedding[i]; // unit vectors: dot = cosine
-      if (s >= CONFIG.min_score) hits.push({ source: d.source, page: c.page, text: c.text, score: s });
+      if (s >= CONFIG.min_score) {
+        hits.push({ source: d.source, page: c.page, text: c.text, score: s,
+                    kind: d.kind === "video" ? "video" : "pdf", video_id: d.videoId || "" });
+      }
     }
   }
   hits.sort((a, b) => b.score - a.score);
@@ -302,10 +399,12 @@ async function apiPatient(url, body, onWait) {
   }
 }
 
-const pageRange = (a, b) => (a === b ? `Page ${a}` : `Pages ${a}–${b}`);
+const pageRange = (a, b, video) => video ? `${fmtTs(a)}–${fmtTs(b)}`
+  : (a === b ? `Page ${a}` : `Pages ${a}–${b}`);
 
 async function summarise(source) {
   const doc = docs.get(source);
+  const video = doc.kind === "video", kind = video ? "video" : "pdf";
   addMessage("user", `Summarise <b>${esc(source)}</b>`);
   const bubble = addMessage("bot", '<span class="typing">Reading the document…</span>');
   const sections = makeSections(pagesFromChunks(doc.chunks));
@@ -320,9 +419,9 @@ async function summarise(source) {
   draw();
 
   await runLimited(sections.map((pages, i) => async () => {
-    const range = pageRange(pages[0].page, pages[pages.length - 1].page);
+    const range = pageRange(pages[0].page, pages[pages.length - 1].page, video);
     try {
-      notes[i] = await apiPatient("/api/summary/section", { source, pages },
+      notes[i] = await apiPatient("/api/summary/section", { source, pages, kind },
         () => { status = `Gemini is busy — retrying ${range}…`; draw(); });
     } catch (e) {
       notes[i] = { error: e.message, start_page: pages[0].page, end_page: pages[pages.length - 1].page,
@@ -339,7 +438,7 @@ async function summarise(source) {
     draw();
     try {
       overview = (await apiPatient("/api/summary/overview",
-        { source, total_pages: doc.pages, sections: ok })).overview;
+        { source, total_pages: video ? doc.duration || 0 : doc.pages, sections: ok, kind })).overview;
     } catch (e) {
       overview = `> ⚠️ Could not write the overview: ${e.message}`;
     }
@@ -356,17 +455,25 @@ async function summarise(source) {
   const a = document.createElement("a");
   a.className = "download";
   a.textContent = "Download summary (.md)";
-  a.download = source.replace(/\.pdf$/i, "") + " - summary.md";
+  a.download = source.replace(/\.pdf$/i, "").replace(/[\\/:*?"<>|]/g, "") + " - summary.md";
   a.href = URL.createObjectURL(new Blob([full], { type: "text/markdown" }));
   bubble.appendChild(a);
 }
 
 /* ---------- chat ---------- */
+function where(s) {
+  return s.kind === "video"
+    ? `<button class="ts" data-vid="${esc(s.video_id || "")}" data-t="${s.page}" data-title="${esc(s.source)}">${ico("play")}${fmtTs(s.page)}</button>`
+    : `page ${s.page}`;
+}
+
 function renderAnswer(r, retrieval) {
-  let html = md(r.answer);
+  // make inline citations like [3] clickable: videos jump to the moment, PDFs open the sources list
+  let html = md(r.answer).replace(/\[(\d{1,2})\](?![^<]*>)/g, (m, n) =>
+    r.sources.some((s) => s.n === +n) ? `<button class="cite" data-n="${n}">[${n}]</button>` : m);
   if (r.sources.length) {
     html += `<details class="sources"><summary>Sources (${r.sources.length})</summary>` +
-      r.sources.map((s) => `<div class="src"><b>[${s.n}]</b> ${esc(s.source)}, page ${s.page}
+      r.sources.map((s) => `<div class="src" data-n="${s.n}"><b>[${s.n}]</b> ${esc(s.source)}, ${where(s)}
         <span class="meta">· similarity ${s.score.toFixed(2)}</span>
         <div class="ex">${esc(s.excerpt)}…</div></div>`).join("") + "</details>";
   }
@@ -391,6 +498,7 @@ $("chatForm").addEventListener("submit", async (e) => {
     bubble.innerHTML = '<span class="typing">Writing an answer…</span>';
     const r = await api("/api/answer", { question: q, passages });
     bubble.innerHTML = renderAnswer(r, retrieval);
+    bubble._sources = r.sources;
     bubble.closest(".msg").scrollIntoView({ block: "start", behavior: "smooth" });
   } catch (err) {
     bubble.innerHTML = `<span class="error">${esc(err.message)}</span>`;

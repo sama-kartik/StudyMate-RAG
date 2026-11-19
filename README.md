@@ -4,9 +4,10 @@ B.Tech Project-I, Department of CSE, Delhi Technological University (AY 2026-27)
 Kartik Sama (23/CS/213) · Kartikey (23/CS/215) · Kislay Garg (23/CS/218)
 
 A chatbot that answers students' questions **from their own course material**.
-Upload PDFs (notes, syllabus, textbooks); the system retrieves the most relevant
-passages and a language model (Google Gemini) writes an answer grounded in them,
-citing the file and page each fact came from.
+Upload PDFs (notes, syllabus, textbooks) or paste a **YouTube lecture link**; the
+system retrieves the most relevant passages and a language model (Google Gemini)
+writes an answer grounded in them, citing the file and page — or the exact moment
+in the video — that each fact came from.
 
 ## Architecture
 
@@ -27,6 +28,14 @@ no external database is used.
  Browser: cosine similarity against stored vectors ──► top-5 passages
  Server:  POST /api/answer ──► prompt with numbered passages ──► Gemini
  Browser: answer with [1][2] citations + source list (file, page, similarity)
+
+ YouTube lectures (once per video)
+ ─────────────────────────────────────────────────────────────────────────────
+ Server:  POST /api/youtube/info ──► real title + channel (YouTube oEmbed)
+ Server:  POST /api/youtube/window ──► Gemini watches 5 minutes of the video
+          (pictures + sound) ──► one timestamped note per 30 s
+ Browser: notes indexed like pages whose "page" is the second in the video
+ Browser: citations show ▶ 12:34 and open the video at that second
 ```
 
 | Part | Technology |
@@ -37,6 +46,7 @@ no external database is used.
 | Vector store and search | IndexedDB + cosine similarity (`public/static/app.js`; same algorithm in `rag/search.py`) |
 | Answer generation | Google Gemini (`gemini-3.8-flash`, with automatic fallback models) |
 | Web app | Flask (`app.py`) with single-user login (`rag/auth.py`), HTML/CSS/JavaScript (`templates/`, `public/static/`) |
+| YouTube lectures | `rag/youtube.py`: Gemini video understanding on public YouTube links, 5-minute windows, 30-second timestamped notes |
 | Evaluation | `eval/evaluate.py`: Hit@k, MRR, relevance, faithfulness, attribution, latency |
 
 **Fallback models:** if Gemini's main model is overloaded, rate-limited or slow,
@@ -86,7 +96,7 @@ Everything except the login page requires signing in; sessions last 7 days when
 3. Go to **Deployments**, open the **⋯** menu on the latest deployment, and click **Redeploy**.
 
 Every `git push` to `main` redeploys automatically. `vercel.json` allows requests
-up to 60 seconds, so slow Gemini responses aren't cut off.
+up to 150 seconds, so slow Gemini responses (and video windows) aren't cut off.
 
 ## Using it
 
@@ -101,6 +111,22 @@ up to 60 seconds, so slow Gemini responses aren't cut off.
   and key takeaways are added. The result can be downloaded as a Markdown file.
 
 Scanned PDFs (images only) have no extractable text and are rejected.
+
+### YouTube lectures
+
+Paste a YouTube link in the box under the upload area and click **Add video**.
+Gemini watches the lecture directly from the link (what is said *and* what is shown
+on slides or the board), five minutes at a time, and writes one note per 30 seconds.
+The notes are indexed like PDF pages, so you can ask questions across PDFs and
+videos together. Answers cite the moment, e.g. **▶ 10:49**: clicking a citation opens
+the video inside StudyMate at that second. **Summarise** works for videos too,
+with timestamps instead of page numbers.
+
+- Only **public** videos work (not private or unlisted).
+- The free Gemini tier allows about **8 hours of YouTube video per day**; a
+  20-minute lecture takes four requests and, when Gemini is not busy, under a minute.
+- The title comes from YouTube's oEmbed endpoint, not the model (models were seen
+  inventing plausible but wrong titles).
 
 ### Built-in documents
 

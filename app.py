@@ -11,7 +11,7 @@ from datetime import timedelta
 
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
-from rag import auth, pipeline
+from rag import auth, pipeline, youtube
 from rag.config import EMBEDDING_DIM, EMBEDDING_MODEL, GEMINI_MODEL, TOP_K
 from rag.llm import LLMError
 from rag.search import MIN_SCORE
@@ -129,7 +129,10 @@ def answer():
     if not q:
         raise ValueError("Please type a question.")
     passages = [{"source": str(p["source"]), "page": int(p["page"]), "text": str(p["text"]),
-                 "score": float(p.get("score", 0))} for p in (body.get("passages") or [])]
+                 "score": float(p.get("score", 0)),
+                 "kind": "video" if p.get("kind") == "video" else "pdf",
+                 "video_id": youtube.parse_video_id(str(p.get("video_id") or ""))}
+                for p in (body.get("passages") or [])]
     return jsonify(pipeline.answer(q, passages))
 
 
@@ -140,7 +143,8 @@ def summary_section():
     if not pages:
         raise ValueError("Send {source, pages: [{page, text}]}.")
     return jsonify(pipeline.summarise_section(str(body.get("source", "")),
-                                              pages[0]["page"], pages[-1]["page"], pages))
+                                              pages[0]["page"], pages[-1]["page"], pages,
+                                              kind=str(body.get("kind") or "pdf")))
 
 
 @app.post("/api/summary/overview")
@@ -151,7 +155,26 @@ def summary_overview():
     if not sections:
         raise ValueError("Send {source, total_pages, sections: [...]}.")
     return jsonify(pipeline.summarise_overview(str(body.get("source", "")),
-                                               int(body.get("total_pages", 0)), sections))
+                                               int(body.get("total_pages", 0)), sections,
+                                               kind=str(body.get("kind") or "pdf")))
+
+
+@app.post("/api/youtube/info")
+def youtube_info():
+    video_id = youtube.parse_video_id(_body().get("url") or "")
+    if not video_id:
+        raise ValueError("That doesn't look like a YouTube link.")
+    return jsonify(youtube.video_info(video_id))
+
+
+@app.post("/api/youtube/window")
+def youtube_window():
+    body = _body()
+    video_id = youtube.parse_video_id(str(body.get("video_id") or ""))
+    if not video_id:
+        raise ValueError("Missing or invalid video id.")
+    start = max(0, int(body.get("start", 0)))
+    return jsonify(youtube.watch_window(video_id, start - start % youtube.WINDOW_S))
 
 
 if __name__ == "__main__":

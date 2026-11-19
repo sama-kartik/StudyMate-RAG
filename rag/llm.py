@@ -7,6 +7,8 @@ import logging
 import math
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from functools import lru_cache
 from typing import Dict, List, Optional
 
@@ -17,6 +19,7 @@ from .config import (EMBEDDING_DIM, EMBEDDING_MODEL, GEMINI_API_KEY,
                      GEMINI_FALLBACK_MODELS, GEMINI_MODEL)
 
 log = logging.getLogger(__name__)
+_POOL = ThreadPoolExecutor(max_workers=8)
 # Silence the SDK's harmless "non-text parts (thought_signature)" notice.
 logging.getLogger("google_genai.types").setLevel(logging.ERROR)
 _RETRYABLE = {404, 429, 500, 503, 504}
@@ -77,20 +80,26 @@ def _daily_quota_wait(e: errors.APIError) -> Optional[float]:
     return delay if per_day else None
 
 
-def generate(prompt: str, system: str = None, temperature: float = 0.2,
-             timeout_s: float = 20, budget_s: float = GENERATE_BUDGET_S) -> str:
+def generate(prompt, system: str = None, temperature: float = 0.2,
+             timeout_s: float = 20, budget_s: float = GENERATE_BUDGET_S,
+             json_mode: bool = False, low_media_resolution: bool = False,
+             models: Optional[List[str]] = None) -> str:
     """Generate text, falling back to other models when one is busy, slow or out of quota.
 
     Models whose free daily quota is used up are skipped until it resets. If every
     remaining model is only temporarily busy, wait briefly and try another round.
+    prompt:    a string, or a list of content parts (e.g. a YouTube video + instructions).
     timeout_s: how long one model may take before we skip to the next.
     budget_s:  total time for this call (keep below vercel.json maxDuration).
+    json_mode: ask the model to reply with JSON only.
+    low_media_resolution: fewer tokens per video frame (faster, cheaper; fine for lectures).
+    models:    try these models in this order instead of the configured list.
     """
     last_err, quota_hit = None, False
     start = time.monotonic()
     while True:
         tried_any = False
-        for model in _models():
+        for model in (models or _models()):
             if _exhausted.get(model, 0) > time.monotonic():
                 quota_hit = True
                 continue
@@ -101,9 +110,18 @@ def generate(prompt: str, system: str = None, temperature: float = 0.2,
             config = types.GenerateContentConfig(
                 system_instruction=system, temperature=temperature,
                 http_options=types.HttpOptions(timeout=int(min(timeout_s, remaining) * 1000)),
+                response_mime_type="application/json" if json_mode else None,
+                media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW if low_media_resolution else None,
             )
             try:
-                resp = _client().models.generate_content(model=model, contents=prompt, config=config)
+                # Enforce the time limit ourselves: with video input the API does not
+                # always honour its own timeout, and a hung call must not block fallback.
+                limit = min(timeout_s, remaining)
+                future = _POOL.submit(_client().models.generate_content, model=model, contents=prompt, config=config)
+                try:
+                    resp = future.result(timeout=limit)
+                except FutureTimeout:
+                    raise TimeoutError(f"no reply within {limit:.0f} s")
                 return (resp.text or "").strip()
             except errors.APIError as e:
                 last_err = e
