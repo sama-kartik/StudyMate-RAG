@@ -50,7 +50,7 @@
             <div>
               <h1>Study<span class="grad">Mate</span></h1>
               <h2>Your AI Study Assistant</h2>
-              <p>Upload your course PDFs and ask anything about them!</p>
+              <p>Upload course PDFs or YouTube lectures and ask anything about them!</p>
               <svg class="swoosh" viewBox="0 0 170 14" aria-hidden="true"><path d="M2 12 C 50 2, 110 0, 168 4" stroke="url(#sw)" stroke-width="4" fill="none" stroke-linecap="round"/><defs><linearGradient id="sw"><stop offset="0" stop-color="#6d4dfc"/><stop offset="1" stop-color="#a78bfa" stop-opacity=".2"/></linearGradient></defs></svg>
             </div>
             {% with mid="hero", cls="" %}{% include "partials/mascot.html" %}{% endwith %}
@@ -79,7 +79,7 @@
           <div id="messages" class="messages" aria-live="polite">
             <div class="msg bot">
               <div class="avatar">{% with mid="a0", cls="" %}{% include "partials/mascot.html" %}{% endwith %}</div>
-              <div class="bubble">Hi! Upload your course PDFs above, then ask me anything about them. Every answer cites the file and page it came from. 💜</div>
+              <div class="bubble">Hi! Upload your course PDFs or paste a YouTube lecture link above, then ask me anything about them. Every answer cites the page — or the exact moment in the video — it came from. 💜</div>
             </div>
           </div>
         </section>
@@ -151,7 +151,7 @@
     <div class="composer-wrap" id="composerWrap">
       <form id="chatForm" class="composer">
         <label class="round" for="fileInput" title="Upload PDFs" aria-label="Upload PDFs"><svg class="ic"><use href="#i-clip"/></svg></label>
-        <textarea id="question" rows="1" placeholder="Ask about your PDFs…" required></textarea>
+        <textarea id="question" rows="1" placeholder="Ask about your PDFs and lectures…" required></textarea>
         <button type="submit" class="round send" id="sendBtn" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
       </form>
     </div>
