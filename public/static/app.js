@@ -346,34 +346,77 @@ function fmtTs(sec) {
 
 /** Gemini watches the video in 10-minute windows and writes timestamped notes;
  *  the notes are indexed like PDF pages whose "page" is the second in the video. */
+/** Live progress panel for a video: overall bar, counts, time left, and one chip per part. */
+function videoProgress(line, title, total) {
+  const parts = [];            // {start, end, state: waiting | watching | retrying | done | empty}
+  const t0 = Date.now();
+  let notes = 0, stage = "watch", indexDone = 0, indexTotal = 0;
+  const label = (p) => `${fmtTs(p.start)}–${fmtTs(p.end)}`;
+  const icon = { waiting: "", watching: '<span class="spin"></span>', retrying: "↻", done: "✓", empty: "–" };
+  function render() {
+    const known = total || parts.length;
+    const done = parts.filter((p) => p.state === "done" || p.state === "empty").length;
+    let pct, head, sub;
+    if (stage === "watch") {
+      pct = known ? Math.round((100 * done) / known) : 0;
+      const left = Math.max(0, known - done);
+      const secs = (Date.now() - t0) / 1000;
+      const eta = done ? Math.round((secs / done) * left) : null;
+      head = `Watching the lecture — ${done} of ${known}${total ? "" : "+"} part${known === 1 ? "" : "s"} done · ${left} left`;
+      sub = `${notes} notes so far · ${eta !== null && left ? `about ${eta < 60 ? eta + " s" : Math.ceil(eta / 60) + " min"} remaining` : "starting…"}` +
+            (parts.some((p) => p.state === "retrying") ? " · Gemini is busy, retrying a part…" : "");
+    } else {
+      pct = indexTotal ? Math.round((100 * indexDone) / indexTotal) : 100;
+      head = `Indexing notes for search — ${indexDone} of ${indexTotal}`;
+      sub = `All ${known} parts watched · ${notes} notes`;
+    }
+    line.innerHTML = `<div class="vprog">
+        <div class="vprog-title">${ico("play")}<b>${esc(title)}</b></div>
+        <div class="vprog-head"><span>${esc(head)}</span><span>${pct}%</span></div>
+        <div class="bar"><i style="width:${pct}%"></i></div>
+        <div class="vprog-sub">${esc(sub)}</div>
+        ${stage === "watch" ? `<div class="chips-row">${parts.filter((p) => p.state !== "empty").map((p) =>
+          `<span class="chip ${p.state}" title="${p.state}">${icon[p.state]} ${label(p)}</span>`).join("")}</div>` : ""}
+      </div>`;
+  }
+  return {
+    parts, render,
+    add(start, end) { const p = { start, end, state: "waiting" }; parts.push(p); return p; },
+    set(p, state) { p.state = state; render(); },
+    addNotes(n) { notes += n; render(); },
+    indexing(doneN, totalN) { stage = "index"; indexDone = doneN; indexTotal = totalN; render(); },
+  };
+}
+
+/** Gemini watches the video in 5-minute windows (three at a time) and writes timestamped
+ *  notes; the notes are indexed like PDF pages whose "page" is the second in the video. */
 async function addVideo(url, line) {
   line.textContent = "Checking the link…";
   const info = await api("/api/youtube/info", { url });
   const source = `${info.title} (YouTube)`;
-  // Watch several 5-minute windows in parallel. If YouTube told us the length we know
-  // every window up front; otherwise keep starting windows until one reports the end.
+  // If YouTube told us the length we know every window up front; otherwise keep
+  // starting windows until one reports the end of the video.
   const WINDOW = 300, PARALLEL = 3;
   const limit = info.duration ? info.duration : 3 * 3600;
   const total = info.duration ? Math.ceil(info.duration / WINDOW) : null;
+  const prog = videoProgress(line, info.title, total);
+  if (total) for (let s = 0; s < info.duration; s += WINDOW) prog.add(s, Math.min(s + WINDOW, info.duration));
+  prog.render();
   const segments = [];
-  let next = 0, endAt = Infinity, done = 0, busy = false;
-  const show = () => {
-    line.textContent = `${info.title}: Gemini is watching ${PARALLEL} parts at a time — ` +
-      (total ? `${done} of ${total} parts done` : `${done} parts done`) +
-      ` (${segments.length} notes)${busy ? " · Gemini is busy, retrying…" : ""}`;
-  };
-  show();
+  let next = 0, endAt = Infinity;
   async function worker() {
     while (true) {
       const start = next;
       if (start >= endAt || start >= limit) return;
       next += WINDOW;
+      const part = prog.parts.find((p) => p.start === start) || prog.add(start, start + WINDOW);
+      prog.set(part, "watching");
       const r = await apiPatient("/api/youtube/window", { video_id: info.video_id, start },
-        () => { busy = true; show(); });
-      busy = false;
+        () => prog.set(part, "retrying"));
       segments.push(...r.segments);
       if (r.end) endAt = Math.min(endAt, start);
-      done++; show();
+      prog.set(part, r.segments.length ? "done" : "empty");
+      prog.addNotes(r.segments.length);
     }
   }
   await Promise.all(Array.from({ length: PARALLEL }, worker));
@@ -381,11 +424,11 @@ async function addVideo(url, line) {
   if (!segments.length) throw new Error("Gemini couldn't read any content from this video.");
   const pages = segments.map((g) => ({ page: g.t, text: `[${fmtTs(g.t)}] ${g.text}` }));
   const chunks = [];
+  prog.indexing(0, pages.length);
   for (let i = 0; i < pages.length; i += 20) {
-    line.textContent = `${info.title}: indexing notes ${Math.min(i + 20, pages.length)} of ${pages.length}…`;
-    const r = await api("/api/index", { source, pages: pages.slice(i, i + 20) },
-      (s) => { line.textContent = `${info.title}: Gemini rate limit, retrying in ${s}s…`; });
+    const r = await api("/api/index", { source, pages: pages.slice(i, i + 20) });
     chunks.push(...r.chunks);
+    prog.indexing(Math.min(i + 20, pages.length), pages.length);
   }
   const last = segments[segments.length - 1].t;
   const doc = {
