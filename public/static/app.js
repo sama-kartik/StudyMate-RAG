@@ -136,6 +136,12 @@ async function loadDocs() {
     }
     docs.set(d.source, { ...d, builtIn: false });
   }
+  // videos indexed before the timestamp fix have (almost) all notes at 00:00
+  const badVideos = [...docs.values()].filter((d) => d.kind === "video" && d.chunks.length > 4 &&
+    new Set(d.chunks.map((c) => c.page)).size <= 2);
+  if (badVideos.length) {
+    $("uploadStatus").innerHTML = badVideos.map((d) => `<div class="err">${ico("alert")} “${esc(d.source)}” was added before a timestamp fix, so its times show 00:00. Remove it (bin icon) and add the link again.</div>`).join("");
+  }
   if (stale) {
     $("uploadStatus").innerHTML =
       `<div class="err">${stale} document(s) were indexed with an older model and were removed. Please upload them again.</div>`;

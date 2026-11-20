@@ -143,15 +143,38 @@ def _notes(video_id: str, a: int, b: int, budget_s: float = 120) -> List[Dict]:
     except json.JSONDecodeError:
         m = re.search(r"\{.*\}", raw, re.S)
         data = json.loads(m.group(0)) if m else {"segments": []}
-    segs: List[Dict] = []
-    for item in data.get("segments") or []:
-        t = parse_ts(item.get("start"))
-        text = str(item.get("text") or "").strip()
-        # keep notes that fall inside this stretch (small tolerance for rounding)
-        if t is None or not text or t < a - 30 or t > b + 30:
-            continue
-        segs.append({"t": t, "text": text})
-    return sorted(segs, key=lambda x: x["t"])
+    items = [(parse_ts(item.get("start")), str(item.get("text") or "").strip())
+             for item in (data.get("segments") or []) if isinstance(item, dict)]
+    items = [(t, text) for t, text in items if text]
+    return [{"t": t, "text": text} for t, text in zip(fix_times([t for t, _ in items], a, b), [x for _, x in items])
+            if t is not None]
+
+
+def fix_times(ts: List[Optional[int]], a: int, b: int) -> List[Optional[int]]:
+    """Make note times trustworthy for the stretch a..b seconds.
+
+    The notes are requested one per 30-second slot, in order. Models sometimes write
+    "00:00" for every note, count from the start of the clip instead of the video,
+    or skip the field; seen in practice, this made every summary topic say "from
+    00:00". Times are kept only if they are present, distinct, increasing and inside
+    the stretch; clip-relative times are shifted; otherwise the slot order is used.
+    """
+    n = len(ts)
+    if not n:
+        return []
+    tol = 30
+
+    def good(xs):
+        return (all(x is not None for x in xs) and all(a - tol <= x <= b + tol for x in xs)
+                and all(x2 > x1 for x1, x2 in zip(xs, xs[1:])))
+
+    if good(ts):
+        return list(ts)
+    shifted = [None if x is None else x + a for x in ts]
+    if a > 0 and good(shifted):          # times counted from the start of the clip
+        return shifted
+    slots = [a + i * SLOT_S for i in range(n)]
+    return [t if t <= b + tol else None for t in slots]   # more notes than slots: drop the overflow
 
 
 def watch_window(video_id: str, start_s: int) -> Dict:

@@ -138,7 +138,7 @@ def generate(prompt, system: str = None, temperature: float = 0.2,
             except LLMError:
                 raise
             except Exception as e:  # timeouts / network errors: the next model may still work
-                log.warning("Gemini model %s failed (%s), trying next model", model, type(e).__name__)
+                log.warning("Gemini model %s failed (%s: %s), trying next model", model, type(e).__name__, str(e)[:120])
                 last_err = e
                 continue
         # Every model was tried (or skipped). Another round only helps if some were
