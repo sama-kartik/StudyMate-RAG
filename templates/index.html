@@ -57,6 +57,20 @@
             {% with mid="hero", cls="" %}{% include "partials/mascot.html" %}{% endwith %}
           </div>
 
+          <div class="subject-bar">
+            <div class="subject-pick">
+              <span class="subject-label"><svg class="ic"><use href="#i-book"/></svg></span>
+              <label for="subjectSel">Subject</label>
+              <select id="subjectSel" class="select" aria-label="Current subject"></select>
+            </div>
+            <div class="subject-actions">
+              <button class="btn" id="newSubject" type="button"><svg class="ic"><use href="#i-plus"/></svg>New subject</button>
+              <button class="btn" id="renameSubject" type="button">Rename</button>
+              <button class="btn danger" id="deleteSubject" type="button" aria-label="Delete subject"><svg class="ic"><use href="#i-trash"/></svg></button>
+            </div>
+            <p class="subject-note" id="subjectSyllabus"></p>
+          </div>
+
           <label class="dropzone" id="dropzone">
             <input type="file" id="fileInput" accept="application/pdf" multiple hidden>
             <svg class="ic"><use href="#i-cloud"/></svg>
@@ -73,10 +87,10 @@
           <div id="uploadStatus" class="status" aria-live="polite"></div>
 
           <div class="section-head">
-            <h3><svg class="ic"><use href="#i-folder"/></svg>Your Documents</h3>
+            <h3><svg class="ic"><use href="#i-folder"/></svg><span id="subjectTitle">General</span></h3>
             <select id="scope" class="select" aria-label="Search in"><option value="">All Documents</option></select>
           </div>
-          <ul class="doc-list" data-doc-list></ul>
+          <ul class="doc-list" id="docList"></ul>
 
           <div id="messages" class="messages" aria-live="polite">
             <div class="msg bot">
@@ -89,13 +103,13 @@
         <!-- ================= DOCUMENTS ================= -->
         <section class="view" data-view="documents" hidden>
           <h1 class="page-title">My Documents</h1>
-          <p class="page-sub">Everything you've uploaded. Documents are stored privately in this browser.</p>
-          <ul class="doc-list" data-doc-list></ul>
+          <p class="page-sub">Everything you've uploaded, grouped by subject. Use the menu on a card to move it to another subject. Documents are stored privately in this browser.</p>
+          <div id="docGroups"></div>
         </section>
 
         <!-- ================= VIVA ================= -->
         <section class="view" data-view="viva" hidden>
-          <h1 class="page-title">Viva Practice</h1>
+          <h1 class="page-title">Viva Practice <span class="title-chip" id="vivaSubject"></span></h1>
           <p class="page-sub">Practise your oral exam. StudyMate asks questions from your own PDFs and lectures, listens to your answer, and grades it like an examiner — with follow-up questions when you miss something.</p>
 
           <div class="card" id="vivaSetup">

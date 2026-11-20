@@ -179,7 +179,8 @@ def viva_question():
     body = _body()
     follow = body.get("follow_up") if isinstance(body.get("follow_up"), dict) else None
     return jsonify(viva.ask(_passages(body), str(body.get("difficulty") or "medium"),
-                            [str(q) for q in (body.get("previous") or [])], follow))
+                            [str(q) for q in (body.get("previous") or [])], follow,
+                            syllabus=str(body.get("syllabus") or "")[:4000]))
 
 
 @app.post("/api/viva/grade")

@@ -82,8 +82,12 @@ const store = (() => {
     if (!dbp) {
       dbp = new Promise((resolve) => {
         try {
-          const req = indexedDB.open("studymate", 1);
-          req.onupgradeneeded = () => req.result.createObjectStore("docs", { keyPath: "source" });
+          const req = indexedDB.open("studymate", 2);
+          req.onupgradeneeded = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains("docs")) db.createObjectStore("docs", { keyPath: "source" });
+            if (!db.objectStoreNames.contains("subjects")) db.createObjectStore("subjects", { keyPath: "id" });
+          };
           req.onsuccess = () => resolve(req.result);
           req.onerror = () => resolve(null);
         } catch { resolve(null); }
@@ -91,32 +95,124 @@ const store = (() => {
     }
     return dbp;
   }
-  async function tx(mode, fn) {
+  async function tx(name, mode, fn) {
     const db = await open();
-    if (!db) return undefined; // private mode etc.: documents last until page reload
+    if (!db) return undefined; // private mode etc.: data lasts until page reload
     return new Promise((resolve, reject) => {
-      const t = db.transaction("docs", mode);
-      const r = fn(t.objectStore("docs"));
+      const t = db.transaction(name, mode);
+      const r = fn(t.objectStore(name));
       t.oncomplete = () => resolve(r && r.result);
       t.onerror = () => reject(t.error);
     });
   }
   return {
-    all: () => tx("readonly", (s) => s.getAll()).then((r) => r || []),
-    put: (doc) => tx("readwrite", (s) => s.put(doc)),
-    remove: (source) => tx("readwrite", (s) => s.delete(source)),
+    all: () => tx("docs", "readonly", (s) => s.getAll()).then((r) => r || []),
+    put: (doc) => tx("docs", "readwrite", (s) => s.put(doc)),
+    remove: (source) => tx("docs", "readwrite", (s) => s.delete(source)),
+    subjects: () => tx("subjects", "readonly", (s) => s.getAll()).then((r) => r || []),
+    putSubject: (sub) => tx("subjects", "readwrite", (s) => s.put(sub)),
+    removeSubject: (id) => tx("subjects", "readwrite", (s) => s.delete(id)),
   };
 })();
 
+/** Save a document's metadata (subject, syllabus flag) without the in-memory-only fields. */
+function saveDoc(d) {
+  const { builtIn, ...rest } = d;
+  if (!builtIn) return store.put(rest);
+}
+
 function toDoc(raw, builtIn) {
   return {
-    source: raw.source, pages: raw.pages, builtIn,
+    source: raw.source, pages: raw.pages, builtIn, subject: raw.subject || "general",
     chunks: raw.chunks.map((c) => ({ ...c, embedding: Float32Array.from(c.embedding) })),
   };
 }
 
+/* ---------- subjects: separate spaces for each course ---------- */
+const subjects = new Map(); // id -> {id, name, created}
+let currentSubject = "general";
+const subjectOf = (d) => d.subject || "general";
+const subjectDocs = (id = currentSubject) => [...docs.values()].filter((d) => subjectOf(d) === id);
+const syllabusOf = (id = currentSubject) => subjectDocs(id).find((d) => d.role === "syllabus");
+const subjectName = (id = currentSubject) => (subjects.get(id) || { name: "General" }).name;
+
+function rememberSubject() { try { localStorage.setItem("studymate-subject", currentSubject); } catch {} }
+
+async function loadSubjects() {
+  for (const s of await store.subjects()) subjects.set(s.id, s);
+  if (!subjects.has("general")) {
+    const g = { id: "general", name: "General", created: Date.now() };
+    subjects.set("general", g);
+    await store.putSubject(g);
+  }
+  let saved = null;
+  try { saved = localStorage.getItem("studymate-subject"); } catch {}
+  currentSubject = saved && subjects.has(saved) ? saved : "general";
+}
+
+function switchSubject(id) {
+  if (!subjects.has(id)) return;
+  currentSubject = id;
+  rememberSubject();
+  $("scope").value = "";
+  renderDocs();
+}
+
+async function newSubject() {
+  const name = (prompt("Name of the new subject (e.g. DBMS, Signals & Systems):") || "").trim();
+  if (!name) return;
+  const id = "s" + Date.now().toString(36);
+  const s = { id, name: name.slice(0, 60), created: Date.now() };
+  subjects.set(id, s);
+  await store.putSubject(s);
+  switchSubject(id);
+}
+
+async function renameSubject() {
+  const s = subjects.get(currentSubject);
+  const name = (prompt("New name for this subject:", s.name) || "").trim();
+  if (!name) return;
+  s.name = name.slice(0, 60);
+  await store.putSubject(s);
+  renderDocs();
+}
+
+async function deleteSubject() {
+  if (currentSubject === "general") { alert("The General subject can't be deleted."); return; }
+  const inside = subjectDocs();
+  const msg = inside.length
+    ? `Delete the subject “${subjectName()}”? Its ${inside.length} document(s) will be moved to General.`
+    : `Delete the empty subject “${subjectName()}”?`;
+  if (!confirm(msg)) return;
+  for (const d of inside) { d.subject = "general"; if (d.role === "syllabus") delete d.role; await saveDoc(d); }
+  await store.removeSubject(currentSubject);
+  subjects.delete(currentSubject);
+  switchSubject("general");
+}
+
+async function moveDoc(source, to) {
+  const d = docs.get(source);
+  if (!d || !subjects.has(to)) return;
+  d.subject = to;
+  if (d.role === "syllabus") delete d.role;
+  await saveDoc(d);
+  renderDocs();
+}
+
+async function toggleSyllabus(source) {
+  const d = docs.get(source);
+  if (!d) return;
+  const makeIt = d.role !== "syllabus";
+  for (const other of subjectDocs(subjectOf(d))) {
+    if (other.role === "syllabus") { delete other.role; await saveDoc(other); }
+  }
+  if (makeIt) { d.role = "syllabus"; await saveDoc(d); }
+  renderDocs();
+}
+
 async function loadDocs() {
   CONFIG = await api("/api/config");
+  await loadSubjects();
   // Built-in course documents indexed ahead of time (scripts/build_sample_index.py).
   try {
     const res = await fetch("/static/sample_index.json");
@@ -134,6 +230,7 @@ async function loadDocs() {
       await store.remove(d.source);
       continue;
     }
+    if (!subjects.has(subjectOf(d))) d.subject = "general";
     docs.set(d.source, { ...d, builtIn: false });
   }
   // videos indexed before the timestamp fix have (almost) all notes at 00:00
@@ -150,55 +247,92 @@ async function loadDocs() {
 }
 
 const ico = (name) => `<svg class="ic"><use href="#i-${name}"/></svg>`;
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+function docCard(d, { move = false } = {}) {
+  const li = document.createElement("li");
+  li.className = "doc" + (d.role === "syllabus" ? " syllabus" : "");
+  const video = d.kind === "video";
+  const meta = video ? `YouTube${d.author ? " · " + esc(d.author) : ""} · ${fmtTs(d.duration || 0)} · ${plural(d.chunks.length, "chunk")}`
+                     : `${plural(d.pages, "page")}${d.imagePages ? ` · ${d.imagePages} read from images` : ""} · ${plural(d.chunks.length, "chunk")}${d.builtIn ? " · built-in" : ""}`;
+  const badge = d.role === "syllabus" ? `<span class="badge">Syllabus</span>` : "";
+  li.innerHTML = `<div class="doc-icon${video ? " video" : ""}">${ico(video ? "play" : "file")}</div>
+    <div><div class="name">${video ? `<button class="linklike">${esc(d.source)}</button>` : esc(d.source)} ${badge}</div>
+      <div class="meta">${meta}</div></div>`;
+  if (video) li.querySelector(".linklike").onclick = () => openPlayer(d.videoId, 0, d.source);
+  const syl = !video && !d.builtIn
+    ? `<button class="btn syl" title="Mark as this subject's syllabus">${ico("star")}${d.role === "syllabus" ? "Syllabus ✓" : "Set as syllabus"}</button>` : "";
+  const mover = move && !d.builtIn
+    ? `<select class="select mover" aria-label="Move to subject">${[...subjects.values()].map((s) =>
+        `<option value="${esc(s.id)}"${s.id === subjectOf(d) ? " selected" : ""}>${esc(s.name)}</option>`).join("")}</select>` : "";
+  li.insertAdjacentHTML("beforeend", `<div class="actions">${mover}${syl}<button class="btn primary sum">${ico("spark")}Summarise</button>
+      ${d.builtIn ? "" : `<button class="btn danger del" aria-label="Remove ${esc(d.source)}">${ico("trash")}</button>`}</div>`);
+  li.querySelector(".sum").onclick = () => summarise(d.source);
+  if (!d.builtIn) li.querySelector(".del").onclick = () => removeDoc(d.source);
+  const sb = li.querySelector(".syl"); if (sb) sb.onclick = () => toggleSyllabus(d.source);
+  const mv = li.querySelector(".mover"); if (mv) mv.onchange = () => moveDoc(d.source, mv.value);
+  return li;
+}
+
+const bySyllabusThenName = (a, b) => (b.role === "syllabus") - (a.role === "syllabus") || a.source.localeCompare(b.source);
 
 function renderDocs() {
+  // subject switcher
+  const sel = $("subjectSel");
+  sel.innerHTML = [...subjects.values()].sort((a, b) => (a.id === "general") - (b.id === "general") || a.name.localeCompare(b.name))
+    .map((s) => `<option value="${esc(s.id)}">${esc(s.name)} (${subjectDocs(s.id).length})</option>`).join("");
+  sel.value = currentSubject;
+  $("subjectTitle").textContent = subjectName();
+  const syl = syllabusOf();
+  $("subjectSyllabus").innerHTML = syl ? `${ico("star")} Syllabus: <b>${esc(syl.source)}</b>` : "No syllabus set — mark a PDF as the syllabus to keep viva questions on-topic.";
+
+  const inSubject = subjectDocs().sort(bySyllabusThenName);
   const scope = $("scope");
   const current = scope.value;
-  scope.innerHTML = '<option value="">All Documents</option>';
-  const sorted = [...docs.values()].sort((a, b) => a.source.localeCompare(b.source));
-  for (const d of sorted) {
-    scope.insertAdjacentHTML("beforeend", `<option value="${esc(d.source)}">${esc(d.source)}</option>`);
-  }
-  scope.value = docs.has(current) ? current : "";
+  scope.innerHTML = `<option value="">Whole subject</option>` +
+    inSubject.map((d) => `<option value="${esc(d.source)}">${esc(d.source)}</option>`).join("");
+  scope.value = inSubject.some((d) => d.source === current) ? current : "";
+
   const vs = $("vivaScope");
   if (vs) {
     const keep = vs.value;
-    vs.innerHTML = `<option value="">All my documents and videos</option>` +
-      sorted.map((d) => `<option value="${esc(d.source)}">${esc(d.source)}</option>`).join("");
-    vs.value = docs.has(keep) ? keep : "";
-    $("vivaStart").disabled = !sorted.length;
-    $("vivaHint").textContent = sorted.length ? "Tip: use Chrome or Edge to answer by voice. You can always type instead."
-                                              : "Add a PDF or a YouTube lecture on the Home page first.";
+    vs.innerHTML = `<option value="">Whole subject: ${esc(subjectName())}</option>` +
+      inSubject.filter((d) => d.role !== "syllabus").map((d) => `<option value="${esc(d.source)}">${esc(d.source)}</option>`).join("");
+    vs.value = inSubject.some((d) => d.source === keep) ? keep : "";
+    $("vivaSubject").textContent = subjectName();
+    $("vivaStart").disabled = !inSubject.length;
+    $("vivaHint").textContent = inSubject.length
+      ? (syl ? `Questions will stay within the syllabus (${syl.source}). ` : "") + "Tip: use Chrome or Edge to answer by voice. You can always type instead."
+      : `Add a PDF or a YouTube lecture to “${subjectName()}” on the Home page first.`;
   }
 
-  document.querySelectorAll("[data-doc-list]").forEach((list) => {
-    if (!sorted.length) {
-      list.innerHTML = `<li class="empty">${ico("file")}<div><strong>No documents uploaded yet</strong>
-        <span>Upload your course PDFs to get started!</span></div></li>`;
-      return;
-    }
-    list.innerHTML = "";
-    for (const d of sorted) {
-      const li = document.createElement("li");
-      li.className = "doc";
-      const video = d.kind === "video";
-      const meta = video ? `YouTube${d.author ? " · " + esc(d.author) : ""} · ${fmtTs(d.duration || 0)} · ${d.chunks.length} chunks`
-                         : `${d.pages} pages${d.imagePages ? ` · ${d.imagePages} read from images` : ""} · ${d.chunks.length} chunks${d.builtIn ? " · built-in" : ""}`;
-      li.innerHTML = `<div class="doc-icon${video ? " video" : ""}">${ico(video ? "play" : "file")}</div>
-        <div><div class="name">${video ? `<button class="linklike">${esc(d.source)}</button>` : esc(d.source)}</div>
-          <div class="meta">${meta}</div></div>`;
-      if (video) li.querySelector(".linklike").onclick = () => openPlayer(d.videoId, 0, d.source);
-      li.insertAdjacentHTML("beforeend", `<div class="actions"><button class="btn primary sum">${ico("spark")}Summarise</button>
-          ${d.builtIn ? "" : `<button class="btn danger del" aria-label="Remove ${esc(d.source)}">${ico("trash")}</button>`}</div>`);
-      li.querySelector(".sum").onclick = () => summarise(d.source);
-      if (!d.builtIn) li.querySelector(".del").onclick = () => removeDoc(d.source);
-      list.appendChild(li);
-    }
-  });
+  // home: this subject only
+  const list = $("docList");
+  list.innerHTML = "";
+  if (!inSubject.length) {
+    list.innerHTML = `<li class="empty">${ico("file")}<div><strong>No documents in “${esc(subjectName())}” yet</strong>
+      <span>Upload its syllabus, notes and lecture videos above.</span></div></li>`;
+  } else inSubject.forEach((d) => list.appendChild(docCard(d)));
 
-  const user = sorted.filter((d) => !d.builtIn);
-  $("storageInfo").innerHTML = `<dt>Documents</dt><dd>${user.length}</dd>
-    <dt>Pages</dt><dd>${user.reduce((n, d) => n + d.pages, 0)}</dd>
+  // My Documents: every subject, grouped, with a "move to" control
+  const groups = $("docGroups");
+  groups.innerHTML = "";
+  for (const s of [...subjects.values()].sort((a, b) => (a.id === "general") - (b.id === "general") || a.name.localeCompare(b.name))) {
+    const ds = subjectDocs(s.id).sort(bySyllabusThenName);
+    const box = document.createElement("div");
+    box.className = "subject-group";
+    box.innerHTML = `<div class="group-head"><h3>${ico("folder")}${esc(s.name)}</h3><span>${plural(ds.length, "item")}</span></div>`;
+    const ul = document.createElement("ul");
+    ul.className = "doc-list";
+    if (!ds.length) ul.innerHTML = `<li class="muted-row">Empty</li>`;
+    ds.forEach((d) => ul.appendChild(docCard(d, { move: true })));
+    box.appendChild(ul);
+    groups.appendChild(box);
+  }
+
+  const user = [...docs.values()].filter((d) => !d.builtIn);
+  $("storageInfo").innerHTML = `<dt>Subjects</dt><dd>${subjects.size}</dd><dt>Documents</dt><dd>${user.length}</dd>
+    <dt>Pages</dt><dd>${user.reduce((n, d) => n + (d.kind === "video" ? 0 : d.pages), 0)}</dd>
     <dt>Chunks</dt><dd>${user.reduce((n, d) => n + d.chunks.length, 0)}</dd>`;
 }
 
@@ -255,7 +389,7 @@ async function addVideo(url, line) {
   }
   const last = segments[segments.length - 1].t;
   const doc = {
-    source, kind: "video", videoId: info.video_id, author: info.author, url: info.url,
+    source, subject: currentSubject, kind: "video", videoId: info.video_id, author: info.author, url: info.url,
     duration: info.duration || last + 30, pages: segments.length, model: CONFIG.embedding_model, dim: CONFIG.embedding_dim,
     chunks: chunks.map((c) => ({ page: c.page, chunk: c.chunk, text: c.text, embedding: Float32Array.from(c.embedding) })),
   };
@@ -398,7 +532,7 @@ async function ingest(file, line) {
     chunks.push(...r.chunks);
   }
   const doc = {
-    source, pages: pages.length, imagePages: transcribed + described, scannedPages: transcribed,
+    source, subject: currentSubject, pages: pages.length, imagePages: transcribed + described, scannedPages: transcribed,
     model: CONFIG.embedding_model, dim: CONFIG.embedding_dim,
     chunks: chunks.map((c) => ({ page: c.page, chunk: c.chunk, text: c.text,
                                  embedding: Float32Array.from(c.embedding) })),
@@ -444,6 +578,7 @@ function search(queryVec, scope) {
   const q = Float32Array.from(queryVec);
   const hits = [];
   for (const d of docs.values()) {
+    if (subjectOf(d) !== currentSubject) continue;
     if (scope && d.source !== scope) continue;
     for (const c of d.chunks) {
       let s = 0;
@@ -598,7 +733,7 @@ $("chatForm").addEventListener("submit", async (e) => {
   addMessage("user", esc(q));
   const bubble = addMessage("bot", '<span class="typing">Searching your notes…</span>');
   try {
-    if (!docs.size) throw new Error("Upload a PDF first, then ask about it.");
+    if (!subjectDocs().length) throw new Error(`“${subjectName()}” has no documents yet — upload a PDF or add a video first.`);
     const t0 = performance.now();
     const { embedding } = await api("/api/embed-query", { question: q });
     const passages = search(embedding, $("scope").value);
@@ -636,7 +771,9 @@ const viva = { results: [], used: new Set(), current: null, followUp: null, n: 0
 function vivaPassages() {
   const groups = new Map();
   for (const d of docs.values()) {
+    if (subjectOf(d) !== viva.subject) continue;
     if (viva.scope && d.source !== viva.scope) continue;
+    if (!viva.scope && d.role === "syllabus" && subjectDocs(viva.subject).length > 1) continue; // ask from notes/lectures
     for (const c of d.chunks) {
       // videos: group notes into ~2-minute stretches; PDFs: one group per page
       const key = d.kind === "video" ? `${d.source}|${Math.floor(c.page / 120)}` : `${d.source}|${c.page}`;
@@ -702,6 +839,27 @@ function vivaBusy(on, text) {
   if (text !== undefined) $("vivaMicStatus").innerHTML = text;
 }
 
+function syllabusText() {
+  const s = syllabusOf(viva.subject);
+  return s ? pagesFromChunks(s.chunks).map((p) => p.text).join("\n").slice(0, 3000) : "";
+}
+
+function fetchQuestion(passages, follow) {
+  return apiPatient("/api/viva/question", {
+    passages, difficulty: viva.level, syllabus: viva.syllabus,
+    previous: [...viva.results.map((x) => x.question), ...(viva.current ? [viva.current.question] : [])],
+    follow_up: follow ? { question: viva.current.question, answer: follow.answer, missing: follow.missing } : null,
+  }).then((r) => ({ ...r, passages }));
+}
+
+/** Prepare the next (non-follow-up) question while the student is answering this one. */
+function prefetchNext() {
+  if (viva.n >= viva.total) { viva.prefetch = null; return; }
+  const p = fetchQuestion(vivaPassages(), null);
+  p.catch(() => {});                      // a failed prefetch is simply fetched again later
+  viva.prefetch = p;
+}
+
 async function vivaAsk() {
   stopMic();
   $("vivaNext").hidden = true;
@@ -712,18 +870,22 @@ async function vivaAsk() {
   $("vivaStep").textContent = `Question ${viva.n} of ${viva.total}${follow ? " · follow-up" : ""}`;
   $("vivaQuestion").innerHTML = '<span class="typing">The examiner is preparing a question…</span>';
   vivaBusy(true, "");
-  const passages = follow ? viva.current.passages : vivaPassages();
   try {
-    const r = await apiPatient("/api/viva/question", {
-      passages, difficulty: viva.level, previous: viva.results.map((x) => x.question),
-      follow_up: follow ? { question: viva.current.question, answer: follow.answer, missing: follow.missing } : null,
-    });
-    viva.current = { question: r.question, topic: r.topic, passages, isFollowUp: !!follow };
+    let r;
+    if (follow) {
+      r = await fetchQuestion(viva.current.passages, follow);    // keep the prepared one for later
+    } else {
+      const ready = viva.prefetch;
+      viva.prefetch = null;
+      r = ready ? await ready.catch(() => fetchQuestion(vivaPassages(), null)) : await fetchQuestion(vivaPassages(), null);
+    }
+    viva.current = { question: r.question, topic: r.topic, passages: r.passages, isFollowUp: !!follow, at: Date.now() };
     viva.followUp = null;
     $("vivaQuestion").textContent = r.question;
     vivaBusy(false, "");
     speak(r.question);
     $("vivaAnswer").focus();
+    if (!viva.prefetch) prefetchNext();
   } catch (e) {
     $("vivaQuestion").innerHTML = `<span class="error">${esc(e.message)}</span>`;
     viva.n--;
@@ -778,35 +940,62 @@ async function vivaSubmit(skipped) {
 function vivaReport() {
   stopMic();
   hush();
+  viva.prefetch = null;
   $("vivaSession").hidden = true;
   const rs = viva.results;
+  const answered = rs.filter((r) => r.answer).length;
   const total = rs.reduce((a, r) => a + r.score, 0), max = rs.length * 10;
   const pct = max ? Math.round((100 * total) / max) : 0;
+  const letter = pct >= 90 ? "A+" : pct >= 80 ? "A" : pct >= 70 ? "B+" : pct >= 60 ? "B" : pct >= 50 ? "C" : pct >= 40 ? "D" : "F";
+  const verdict = !rs.length ? "No questions answered yet"
+    : pct >= 85 ? "Excellent — ready for the viva" : pct >= 65 ? "Good — revise the weak topics"
+    : pct >= 40 ? "Needs work — revise and try again" : "Not ready yet — study the material first";
+  const mins = Math.max(1, Math.round((Date.now() - viva.startedAt) / 60000));
   const weak = [...new Set(rs.filter((r) => r.score <= 5).map((r) => r.topic || r.question.slice(0, 40)))];
-  const grade = pct >= 85 ? "Excellent — ready for the viva" : pct >= 65 ? "Good — revise the weak topics" : pct >= 40 ? "Needs work — revise and try again" : "Not ready yet — study the material first";
-  const mdReport = `# Viva practice report\n\nScore: ${total}/${max} (${pct}%) — ${grade}\n\n` +
-    rs.map((r, i) => `## Q${i + 1}${r.followUp ? " (follow-up)" : ""}: ${r.question}\n\n**Your answer:** ${r.answer || "(skipped)"}\n\n**Score:** ${r.score}/10 — ${r.verdict}\n\n**Missed:**\n${r.missing.map((m) => "- " + m).join("\n") || "- nothing"}\n\n**Model answer:** ${r.model_answer}\n`).join("\n") +
-    (weak.length ? `\n## Topics to revise\n${weak.map((w) => "- " + w).join("\n")}\n` : "");
+  const strong = [...new Set(rs.filter((r) => r.score >= 8).map((r) => r.topic || r.question.slice(0, 40)))];
+  const cls = (s) => (s >= 7 ? "good" : s >= 4 ? "mid" : "low");
+
+  const mdReport = `# Viva practice report — ${subjectName(viva.subject)}\n\n` +
+    `**Score:** ${total}/${max} (${pct}%) · **Grade:** ${letter} · ${verdict}\n\n` +
+    `Questions: ${rs.length} · answered: ${answered} · skipped: ${rs.length - answered} · time: ${mins} min · difficulty: ${viva.level}\n\n` +
+    rs.map((r, i) => `## Q${i + 1}${r.followUp ? " (follow-up)" : ""}: ${r.question}\n\n**Your answer:** ${r.answer || "(skipped)"}\n\n**Score:** ${r.score}/10 — ${r.verdict}\n\n**What you got right:**\n${r.strengths.map((m) => "- " + m).join("\n") || "- —"}\n\n**What you missed:**\n${r.missing.map((m) => "- " + m).join("\n") || "- nothing"}\n\n**Model answer:** ${r.model_answer}\n`).join("\n") +
+    (weak.length ? `\n## Topics to revise\n${weak.map((w) => "- " + w).join("\n")}\n` : "") +
+    (strong.length ? `\n## Strong topics\n${strong.map((w) => "- " + w).join("\n")}\n` : "");
+
   const box = $("vivaReport");
   box.hidden = false;
-  box.innerHTML = `<div class="card"><div class="row" style="align-items:center;gap:22px">
-      <div class="big-score">${total}<span style="font-size:24px;color:var(--muted)">/${max}</span></div>
-      <div><h4 style="margin:0">${esc(grade)}</h4><p style="margin:4px 0 0">${rs.length} question(s) · ${pct}%</p></div></div>
-    <table class="report-table"><tr><th>#</th><th>Question</th><th>Score</th></tr>
-    ${rs.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.question)}${r.followUp ? " <i>(follow-up)</i>" : ""}</td><td><b>${r.score}/10</b></td></tr>`).join("")}</table>
-    ${weak.length ? `<h4>Topics to revise</h4><ul>${weak.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : "<p>No weak topics — well done!</p>"}
-    <div class="row" style="margin-top:14px"><a class="btn" id="vivaDownload">Download report (.md)</a><button class="btn primary" id="vivaAgain" type="button">Practise again</button></div></div>`;
+  box.innerHTML = `<div class="card report-card">
+      <div class="report-top">
+        <div class="ring ${rs.length ? cls(total / Math.max(1, rs.length)) : "low"}" style="--p:${pct}"><div><b>${pct}%</b><span>${letter}</span></div></div>
+        <div><div class="examiner-label">Viva result · ${esc(subjectName(viva.subject))}</div>
+          <h2 style="margin:4px 0">${total} / ${max} marks</h2>
+          <p style="margin:0">${esc(verdict)}</p>
+          <p class="note-small" style="margin-top:6px">${rs.length} question(s) · ${answered} answered · ${rs.length - answered} skipped · ${mins} min · ${esc(viva.level)}</p></div>
+      </div>
+      ${rs.length ? `<table class="report-table"><tr><th>#</th><th>Question</th><th>Score</th></tr>
+        ${rs.map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.question)}${r.followUp ? " <i>(follow-up)</i>" : ""}
+          <details><summary>Feedback</summary><p><b>${esc(r.verdict)}</b></p>
+          <div class="fb-h miss">Missed</div>${fbList(r.missing)}${r.model_answer ? `<div class="fb-h">Model answer</div>${md(r.model_answer)}` : ""}</details></td>
+          <td><span class="pill-score ${cls(r.score)}">${r.score}/10</span></td></tr>`).join("")}</table>` : ""}
+      <div class="two-col">
+        <div><h4>Topics to revise</h4>${weak.length ? `<ul>${weak.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : "<p>None — well done!</p>"}</div>
+        <div><h4>Strong topics</h4>${strong.length ? `<ul>${strong.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : "<p>—</p>"}</div>
+      </div>
+      <div class="row" style="margin-top:14px"><a class="btn" id="vivaDownload">${ico("file")}Download report</a><button class="btn primary" id="vivaAgain" type="button">Practise again</button></div></div>`;
   const a = $("vivaDownload");
-  a.download = "StudyMate viva report.md";
+  a.download = `StudyMate viva report - ${subjectName(viva.subject).replace(/[\\/:*?"<>|]/g, "")}.md`;
   a.href = URL.createObjectURL(new Blob([mdReport], { type: "text/markdown" }));
   $("vivaAgain").onclick = () => { box.hidden = true; $("vivaSetup").hidden = false; };
-  speak(`Viva complete. You scored ${total} out of ${max}. ${grade}.`);
+  box.scrollIntoView({ block: "start" });
+  if (rs.length) speak(`Viva complete. You scored ${total} out of ${max}. ${verdict}.`);
 }
 
 $("vivaStart").addEventListener("click", () => {
-  if (!docs.size) return;
-  Object.assign(viva, { results: [], used: new Set(), current: null, followUp: null, n: 0,
-    total: +$("vivaCount").value, level: $("vivaLevel").value, scope: $("vivaScope").value });
+  if (!subjectDocs().length) return;
+  Object.assign(viva, { results: [], used: new Set(), current: null, followUp: null, n: 0, prefetch: null,
+    total: +$("vivaCount").value, level: $("vivaLevel").value, scope: $("vivaScope").value,
+    subject: currentSubject, startedAt: Date.now() });
+  viva.syllabus = syllabusText();
   $("vivaSetup").hidden = true; $("vivaReport").hidden = true; $("vivaSession").hidden = false;
   $("vivaRunning").textContent = "";
   vivaAsk();
@@ -814,7 +1003,7 @@ $("vivaStart").addEventListener("click", () => {
 $("vivaSubmit").addEventListener("click", () => vivaSubmit(false));
 $("vivaSkip").addEventListener("click", () => vivaSubmit(true));
 $("vivaNext").addEventListener("click", () => (viva.n < viva.total || !viva.current ? vivaAsk() : vivaReport()));
-$("vivaEnd").addEventListener("click", () => (viva.results.length ? vivaReport() : (stopMic(), $("vivaSession").hidden = true, $("vivaSetup").hidden = false)));
+$("vivaEnd").addEventListener("click", () => vivaReport());   // always show the score so far
 $("vivaSpeak").addEventListener("click", () => { const v = $("vivaVoice").checked; $("vivaVoice").checked = true; speak($("vivaQuestion").textContent); $("vivaVoice").checked = v; });
 if ("speechSynthesis" in window) speechSynthesis.getVoices();
 
@@ -853,13 +1042,16 @@ $("clearAll").addEventListener("click", async () => {
   renderDocs();
 });
 
+$("subjectSel").addEventListener("change", (e) => switchSubject(e.target.value));
+$("newSubject").addEventListener("click", newSubject);
+$("renameSubject").addEventListener("click", renameSubject);
+$("deleteSubject").addEventListener("click", deleteSubject);
+
 showView(location.hash.slice(1) || "home");
 loadDocs().then(() => {
   $("modelInfo").innerHTML = `<dt>Answers</dt><dd>${esc(CONFIG.chat_model || "Gemini")} (with automatic fallbacks)</dd>
     <dt>Embeddings</dt><dd>${esc(CONFIG.embedding_model)} · ${CONFIG.embedding_dim} dimensions</dd>
     <dt>Retrieval</dt><dd>Top ${CONFIG.top_k} passages, cosine similarity ≥ ${CONFIG.min_score}</dd>`;
 }).catch((e) => {
-  document.querySelectorAll("[data-doc-list]").forEach((l) => {
-    l.innerHTML = `<li class="empty error">${ico("alert")}<div><strong>Could not start</strong><span>${esc(e.message)}</span></div></li>`;
-  });
+  $("docList").innerHTML = `<li class="empty error">${ico("alert")}<div><strong>Could not start</strong><span>${esc(e.message)}</span></div></li>`;
 });

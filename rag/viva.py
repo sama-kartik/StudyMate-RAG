@@ -14,6 +14,10 @@ DIFFICULTY = {
     "hard": "a demanding question that asks to compare, apply, justify or connect ideas",
 }
 
+# Viva needs quick turns: fast "lite" models first, larger ones as fallbacks.
+VIVA_MODELS = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+               "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.8-flash"]
+
 EXAMINER = ("You are a strict but fair university viva examiner. You only use the course material "
             "provided to you. You never reveal the answer while asking a question.")
 
@@ -22,7 +26,7 @@ def _context(passages: List[Dict]) -> str:
     out = []
     for i, p in enumerate(passages, start=1):
         where = f"at {fmt_ts(p['page'])}" if p.get("kind") == "video" else f"page {p['page']}"
-        out.append(f"[{i}] ({p['source']}, {where})\n{p['text']}")
+        out.append(f"[{i}] ({p['source']}, {where})\n{p['text'][:1500]}")
     return "\n\n".join(out)
 
 
@@ -35,7 +39,7 @@ def _json(raw: str) -> Dict:
 
 
 def ask(passages: List[Dict], difficulty: str = "medium", previous: Optional[List[str]] = None,
-        follow_up: Optional[Dict] = None) -> Dict:
+        follow_up: Optional[Dict] = None, syllabus: str = "") -> Dict:
     """Return {"question", "topic"} for the next viva question."""
     if not passages:
         raise ValueError("Add a PDF or video first, then start the viva.")
@@ -49,7 +53,9 @@ def ask(passages: List[Dict], difficulty: str = "medium", previous: Optional[Lis
                 "the way an examiner would ('You mentioned X — but why...?').")
     else:
         task = f"Ask ONE new viva question based on the material: {level}."
-    prompt = f"""Course material:
+    syllabus_part = (f"Course syllabus (keep the question within it):\n{syllabus[:2000]}\n\n"
+                     if syllabus.strip() else "")
+    prompt = f"""{syllabus_part}Course material:
 {_context(passages)}
 
 Questions already asked (do not repeat them):
@@ -58,7 +64,8 @@ Questions already asked (do not repeat them):
 {task}
 The question must be answerable from the material above, be clear and specific, and take
 1-3 minutes to answer aloud. Reply as JSON: {{"question": "...", "topic": "2-5 word topic name"}}"""
-    data = _json(generate(prompt, system=EXAMINER, temperature=0.7, timeout_s=40, budget_s=100, json_mode=True))
+    data = _json(generate(prompt, system=EXAMINER, temperature=0.7, timeout_s=20, budget_s=60,
+                          json_mode=True, models=VIVA_MODELS))
     q = str(data.get("question") or "").strip()
     if not q:
         raise ValueError("Couldn't create a question — please try again.")
@@ -87,7 +94,8 @@ Grade the answer ONLY against the course material above. Reply as JSON:
   "model_answer": "a concise ideal answer (3-6 sentences) citing passages like [1]"}}
 Scoring: 9-10 complete and precise; 7-8 mostly right with small gaps; 4-6 partly right;
 1-3 mostly wrong or very vague; 0 irrelevant. Be specific; do not invent facts."""
-    data = _json(generate(prompt, system=EXAMINER, temperature=0.2, timeout_s=45, budget_s=110, json_mode=True))
+    data = _json(generate(prompt, system=EXAMINER, temperature=0.2, timeout_s=30, budget_s=90,
+                          json_mode=True, models=VIVA_MODELS))
     try:
         score = max(0, min(10, int(round(float(data.get("score", 0))))))
     except (TypeError, ValueError):

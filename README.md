@@ -121,6 +121,14 @@ diagrams and scanned notes. The option **Read images, diagrams & scanned pages**
 under the upload box can be turned off for picture-heavy PDFs (scanned pages are
 always read).
 
+### Subjects
+
+Documents and videos are organised into **subjects** (e.g. "DBMS", "Signals & Systems"),
+each a separate space: chat answers, summaries and viva questions only use the
+current subject's material. Create, rename or delete subjects from the bar on the
+Home page; move documents between subjects on **My Documents**. Mark one PDF per
+subject as its **syllabus** — the viva examiner then keeps questions within it.
+
 ### Viva practice
 
 The **Viva Practice** page simulates an oral exam on your own material. StudyMate
@@ -129,9 +137,10 @@ read aloud by the browser — and you answer by **speaking** (Web Speech API, li
 transcription; Chrome, Edge, Safari) or by typing. The answer is graded out of 10
 against the material (`rag/viva.py`): what you got right, what you missed (with
 citations to pages or video timestamps) and a model answer. A weak answer (≤ 5)
-triggers a **follow-up question** on the missed point, like a real examiner. At
-the end you get a score, a per-question table, topics to revise and a downloadable
-report.
+triggers a **follow-up question** on the missed point, like a real examiner. The next
+question is prepared while you answer, so it usually appears instantly. **End viva**
+shows the report at any point: score, grade, per-question feedback, topics to
+revise and a downloadable report.
 
 ### YouTube lectures
 
