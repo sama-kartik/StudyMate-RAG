@@ -23,6 +23,7 @@
       <button class="nav-btn" data-view-link="home"><svg class="ic"><use href="#i-home"/></svg>Home</button>
       <button class="nav-btn" data-view-link="documents"><svg class="ic"><use href="#i-file"/></svg>My Documents</button>
       <button class="nav-btn" data-view-link="viva"><svg class="ic"><use href="#i-mic"/></svg>Viva Practice</button>
+      <button class="nav-btn" data-view-link="predict"><svg class="ic"><use href="#i-target"/></svg>Exam Predictor</button>
       <button class="nav-btn" data-view-link="settings"><svg class="ic"><use href="#i-settings"/></svg>Settings</button>
       <button class="nav-btn" data-view-link="about"><svg class="ic"><use href="#i-info"/></svg>About</button>
     </nav>
@@ -149,6 +150,32 @@
           </div>
 
           <div id="vivaReport" hidden></div>
+        </section>
+
+        <!-- ================= EXAM PREDICTOR ================= -->
+        <section class="view" data-view="predict" hidden>
+          <h1 class="page-title">Exam Predictor <span class="title-chip" id="predSubject"></span></h1>
+          <p class="page-sub">Upload previous-year question papers. StudyMate reads every question (scanned papers and phone photos too), finds the topics that keep coming back, and predicts what is likely in your next exam, with links to where your notes and lectures cover it.</p>
+
+          <div class="card">
+            <div class="pred-step"><span>1</span><h3>Past papers for this subject</h3></div>
+            <label class="dropzone compact" id="paperDrop">
+              <input type="file" id="paperInput" accept="application/pdf,image/*" multiple hidden>
+              <svg class="ic"><use href="#i-cloud"/></svg>
+              <strong>Add past papers</strong>
+              <span>PDFs, scanned PDFs, or photos of a paper (select all photos of one paper together)</span>
+            </label>
+            <div id="paperStatus" class="status" aria-live="polite"></div>
+            <ul class="doc-list" id="paperList"></ul>
+          </div>
+
+          <div class="card">
+            <div class="pred-step"><span>2</span><h3>Predict</h3></div>
+            <div class="row"><button class="btn primary" id="predictBtn" type="button"><svg class="ic"><use href="#i-target"/></svg>Predict my exam</button></div>
+            <p class="note-small" id="predictHint"></p>
+          </div>
+
+          <div id="predictOut" aria-live="polite"></div>
         </section>
 
         <!-- ================= SETTINGS ================= -->

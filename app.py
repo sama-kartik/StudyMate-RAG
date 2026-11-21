@@ -11,9 +11,9 @@ from datetime import timedelta
 
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
-from rag import auth, pipeline, vision, viva, youtube
+from rag import auth, pipeline, predictor, vision, viva, youtube
 from rag.config import EMBEDDING_DIM, EMBEDDING_MODEL, GEMINI_MODEL, TOP_K
-from rag.llm import LLMError
+from rag.llm import LLMError, embed
 from rag.search import MIN_SCORE
 
 # Static files live in public/static: Vercel serves public/** from its CDN, and
@@ -116,7 +116,13 @@ def index_pages():
 
 @app.post("/api/embed-query")
 def embed_query():
-    q = (_body().get("question") or "").strip()
+    body = _body()
+    if isinstance(body.get("queries"), list):          # batch: used to link predicted topics to notes
+        qs = [str(q).strip()[:500] for q in body["queries"] if str(q).strip()][:60]
+        if not qs:
+            raise ValueError("Send {queries: [...]}.")
+        return jsonify(embeddings=embed(qs, query=True))
+    q = (body.get("question") or "").strip()
     if not q:
         raise ValueError("Please type a question.")
     return jsonify(embedding=pipeline.embed_query(q))
@@ -209,6 +215,28 @@ def youtube_window():
         raise ValueError("Missing or invalid video id.")
     start = max(0, int(body.get("start", 0)))
     return jsonify(youtube.watch_window(video_id, start - start % youtube.WINDOW_S))
+
+
+@app.post("/api/papers/extract")
+def papers_extract():
+    body = _body()
+    pages = [{"page": int(p["page"]), "text": str(p.get("text") or "")} for p in (body.get("pages") or [])][:40]
+    return jsonify(predictor.extract_questions(str(body.get("source") or "paper"), pages))
+
+
+@app.post("/api/papers/predict")
+def papers_predict():
+    body = _body()
+    papers = []
+    for p in (body.get("papers") or [])[:15]:
+        qs = [{"no": str(q.get("no") or ""), "text": str(q.get("text") or "")[:1500],
+               "marks": q.get("marks") if isinstance(q.get("marks"), (int, float)) else None}
+              for q in (p.get("questions") or []) if isinstance(q, dict) and str(q.get("text") or "").strip()]
+        y = p.get("year")
+        papers.append({"source": str(p.get("source") or "paper"), "questions": qs,
+                       "year": int(y) if isinstance(y, (int, float)) and 1990 <= y <= 2100 else None})
+    return jsonify(predictor.predict(papers, str(body.get("subject") or ""),
+                                     str(body.get("syllabus") or "")[:6000]))
 
 
 if __name__ == "__main__":

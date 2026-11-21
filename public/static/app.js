@@ -272,12 +272,13 @@ function docCard(d, { move = false } = {}) {
   const video = d.kind === "video";
   const meta = video ? `YouTube${d.author ? " · " + esc(d.author) : ""} · ${fmtTs(d.duration || 0)} · ${plural(d.chunks.length, "chunk")}`
                      : `${plural(d.pages, "page")}${d.imagePages ? ` · ${d.imagePages} read from images` : ""} · ${plural(d.chunks.length, "chunk")}${d.builtIn ? " · built-in" : ""}`;
-  const badge = d.role === "syllabus" ? `<span class="badge">Syllabus</span>` : "";
+  const badge = d.role === "syllabus" ? `<span class="badge">Syllabus</span>`
+    : d.role === "paper" ? `<span class="badge paper">Past paper${d.paper && d.paper.year ? " " + d.paper.year : ""}</span>` : "";
   li.innerHTML = `<div class="doc-icon${video ? " video" : ""}">${ico(video ? "play" : "file")}</div>
     <div><div class="name">${video ? `<button class="linklike">${esc(d.source)}</button>` : esc(d.source)} ${badge}</div>
       <div class="meta">${meta}</div></div>`;
   if (video) li.querySelector(".linklike").onclick = () => openPlayer(d.videoId, 0, d.source);
-  const syl = !video && !d.builtIn
+  const syl = !video && !d.builtIn && d.role !== "paper"
     ? `<button class="btn syl" title="Mark as this subject's syllabus">${ico("star")}${d.role === "syllabus" ? "Syllabus ✓" : "Set as syllabus"}</button>` : "";
   const mover = move && !d.builtIn
     ? `<select class="select mover" aria-label="Move to subject">${[...subjects.values()].map((s) =>
@@ -347,6 +348,7 @@ function renderDocs() {
     groups.appendChild(box);
   }
 
+  renderPapers();
   const user = [...docs.values()].filter((d) => !d.builtIn);
   $("storageInfo").innerHTML = `<dt>Subjects</dt><dd>${subjects.size}</dd><dt>Documents</dt><dd>${user.length}</dd>
     <dt>Pages</dt><dd>${user.reduce((n, d) => n + (d.kind === "video" ? 0 : d.pages), 0)}</dd>
@@ -526,80 +528,131 @@ async function extractPages(pdf) {
   return pages;
 }
 
-/** Render one PDF page to a JPEG data URL about 1100 px wide. */
-async function renderPage(pdf, n) {
-  const page = await pdf.getPage(n);
-  const base = page.getViewport({ scale: 1 });
-  const viewport = page.getViewport({ scale: Math.min(2, 1100 / base.width) });
+/** Draw a canvas source (PDF page or photo) to a white-backed JPEG data URL under ~1 MB. */
+function toJpeg(draw, w, h) {
   const canvas = document.createElement("canvas");
-  canvas.width = Math.floor(viewport.width); canvas.height = Math.floor(viewport.height);
+  canvas.width = Math.floor(w); canvas.height = Math.floor(h);
   const ctx = canvas.getContext("2d");
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvasContext: ctx, viewport }).promise;
-  let q = 0.72, url = canvas.toDataURL("image/jpeg", q);
-  while (url.length > 1_400_000 && q > 0.35) { q -= 0.12; url = canvas.toDataURL("image/jpeg", q); }
-  canvas.width = canvas.height = 0;
+  return Promise.resolve(draw(ctx)).then(() => {
+    let q = 0.75, url = canvas.toDataURL("image/jpeg", q);
+    while (url.length > 1_400_000 && q > 0.35) { q -= 0.1; url = canvas.toDataURL("image/jpeg", q); }
+    canvas.width = canvas.height = 0;
+    return url;
+  });
+}
+
+/** Render one PDF page to a JPEG data URL (default about 1100 px wide; exam papers use more for small print). */
+async function renderPage(pdf, n, width = 1100) {
+  const page = await pdf.getPage(n);
+  const base = page.getViewport({ scale: 1 });
+  const viewport = page.getViewport({ scale: Math.min(2.5, width / base.width) });
+  return toJpeg((ctx) => page.render({ canvasContext: ctx, viewport }).promise, viewport.width, viewport.height);
+}
+
+/** Read a photo (JPG/PNG/HEIC that the browser can open) as a JPEG data URL, at most `width` px wide. */
+async function renderImage(file, width = 1600) {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, width / bmp.width, 2200 / bmp.height);
+  const url = await toJpeg((ctx) => ctx.drawImage(bmp, 0, 0, bmp.width * k, bmp.height * k), bmp.width * k, bmp.height * k);
+  bmp.close && bmp.close();
   return url;
 }
 
-async function ingest(file, line) {
+/** Let Gemini read page images. jobs: [{p: {page, text}, mode: "transcribe"|"visuals", image: () => Promise<dataURL>}].
+ *  A batch that fails is retried one page at a time, so one bad page never loses its neighbours. */
+async function visionRead(source, jobs, onProgress) {
+  let seen = 0, transcribed = 0, described = 0;
+  const failed = [];
+  const apply = (batch, r) => {
+    for (const j of batch) {
+      const got = (r.pages.find((x) => x.page === j.p.page) || {}).text || "";
+      if (!got) { if (j.mode === "transcribe") failed.push(j); continue; }
+      if (j.mode === "transcribe") { j.p.text = got; transcribed++; }
+      else { j.p.text += "\n\n" + got; described++; }
+    }
+  };
+  const send = async (batch) => {
+    const payload = [];
+    for (const j of batch) payload.push({ page: j.p.page, mode: j.mode, text: j.mode === "visuals" ? j.p.text : "", image: await j.image() });
+    return apiPatient("/api/vision/pages", { source, pages: payload });
+  };
+  const batches = [];
+  for (let i = 0; i < jobs.length; i += VISION_BATCH) batches.push(jobs.slice(i, i + VISION_BATCH));
+  onProgress(0, jobs.length);
+  await runLimited(batches.map((batch) => async () => {
+    try { apply(batch, await send(batch)); }
+    catch (e) {
+      if (/quota for today/.test(e.message)) throw e;
+      for (const j of batch) {                       // retry page by page
+        try { apply([j], await send([j])); } catch (e2) { console.warn("vision failed for page", j.p.page, e2); if (j.mode === "transcribe") failed.push(j); }
+      }
+    }
+    seen += batch.length; onProgress(seen, jobs.length);
+  }), VISION_PARALLEL);
+  return { transcribed, described, failed: failed.length };
+}
+
+/** Read a PDF into pages of text, sending scanned pages (and, optionally, pictures) to Gemini vision.
+ *  opts.paper: exam papers — pages that are mostly image with little text are treated as scans too,
+ *  rendered sharper, and every page must end up readable. */
+async function readPdf(file, onStatus, opts = {}) {
   const source = file.name;
-  line.textContent = `${source}: reading PDF…`;
+  onStatus(`${source}: reading PDF…`);
   const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
   const all = await extractPages(pdf);
-  const readImages = $("readImages") ? $("readImages").checked : true;
-
-  // Pages Gemini should look at: scans are transcribed; pages with pictures get figure descriptions.
+  const readImages = opts.paper || ($("readImages") ? $("readImages").checked : true);
+  const scanLimit = opts.paper ? 400 : SCANNED_CHARS;   // scanned papers often carry a stray line of text ("Scanned with …")
+  const width = opts.paper ? 1600 : 1100;
   const jobs = [];
   for (const p of all) {
-    if (p.text.length < SCANNED_CHARS) jobs.push({ p, mode: "transcribe" });
-    else if (readImages && p.hasImages) jobs.push({ p, mode: "visuals" });
+    const image = () => renderPage(pdf, p.page, width);
+    if (p.text.length < SCANNED_CHARS || (opts.paper && p.hasImages && p.text.length < scanLimit)) jobs.push({ p, mode: "transcribe", image });
+    else if (readImages && p.hasImages && !opts.paper) jobs.push({ p, mode: "visuals", image });
   }
-  let seen = 0, transcribed = 0, described = 0;
+  let v = { transcribed: 0, described: 0, failed: 0 };
   if (jobs.length) {
-    const batches = [];
-    for (let i = 0; i < jobs.length; i += VISION_BATCH) batches.push(jobs.slice(i, i + VISION_BATCH));
-    const status = () => { line.textContent = `${source}: Gemini is reading ${jobs.length} page image(s) — ${seen} done…`; };
-    status();
-    await runLimited(batches.map((batch) => async () => {
-      const payload = [];
-      for (const j of batch) {
-        payload.push({ page: j.p.page, mode: j.mode, text: j.mode === "visuals" ? j.p.text : "",
-                       image: await renderPage(pdf, j.p.page) });
-      }
-      try {
-        const r = await apiPatient("/api/vision/pages", { source, pages: payload });
-        for (const j of batch) {
-          const got = (r.pages.find((x) => x.page === j.p.page) || {}).text || "";
-          if (!got) continue;
-          if (j.mode === "transcribe") { j.p.text = got; transcribed++; }
-          else { j.p.text += "\n\n" + got; described++; }
-        }
-      } catch (e) {
-        console.warn("vision failed for pages", batch.map((j) => j.p.page), e);
-      }
-      seen += batch.length; status();
-    }), VISION_PARALLEL);
+    v = await visionRead(source, jobs, (done, n) => onStatus(`${source}: Gemini is reading ${n} scanned/picture page${n === 1 ? "" : "s"} — ${done} of ${n} done…`));
   }
   const pages = all.filter((p) => p.text.trim()).map(({ page, text }) => ({ page, text }));
   if (!pages.length) throw new Error("no readable text, even from the page images");
+  return { source, pages, numPages: pdf.numPages, ...v };
+}
 
+/** Photos of one paper → pages of text (every photo is transcribed). */
+async function readPhotos(files, name, onStatus) {
+  const all = files.map((f, i) => ({ page: i + 1, text: "" }));
+  const jobs = all.map((p, i) => ({ p, mode: "transcribe", image: () => renderImage(files[i]) }));
+  const v = await visionRead(name, jobs, (done, n) => onStatus(`${name}: Gemini is reading ${n} photo${n === 1 ? "" : "s"} — ${done} of ${n} done…`));
+  const pages = all.filter((p) => p.text.trim());
+  if (!pages.length) throw new Error("Gemini couldn't read any text from these photos — try clearer, well-lit pictures");
+  return { source: name, pages, numPages: files.length, ...v };
+}
+
+/** Chunk + embed pages on the server and save the document in this browser. */
+async function indexDoc(read, onStatus, extra = {}) {
+  const { source, pages, numPages } = read;
   const chunks = [];
   for (let i = 0; i < pages.length; i += PAGES_PER_REQUEST) {
-    line.textContent = `${source}: indexing page ${pages[Math.min(i + PAGES_PER_REQUEST, pages.length) - 1].page} of ${pdf.numPages}…`;
+    onStatus(`${source}: indexing page ${pages[Math.min(i + PAGES_PER_REQUEST, pages.length) - 1].page} of ${numPages}…`);
     const r = await api("/api/index", { source, pages: pages.slice(i, i + PAGES_PER_REQUEST) },
-      (s) => { line.textContent = `${source}: Gemini rate limit, retrying in ${s}s…`; });
+      (s) => onStatus(`${source}: Gemini rate limit, retrying in ${s}s…`));
     chunks.push(...r.chunks);
   }
   const doc = {
-    source, subject: currentSubject, pages: pages.length, imagePages: transcribed + described, scannedPages: transcribed,
-    model: CONFIG.embedding_model, dim: CONFIG.embedding_dim,
+    source, subject: currentSubject, pages: pages.length, imagePages: read.transcribed + read.described, scannedPages: read.transcribed,
+    model: CONFIG.embedding_model, dim: CONFIG.embedding_dim, ...extra,
     chunks: chunks.map((c) => ({ page: c.page, chunk: c.chunk, text: c.text,
                                  embedding: Float32Array.from(c.embedding) })),
   };
   await store.put(doc);
   docs.set(source, { ...doc, builtIn: false });
   return doc;
+}
+
+async function ingest(file, line) {
+  const status = (t) => { line.textContent = t; };
+  return indexDoc(await readPdf(file, status), status);
 }
 
 async function upload(files) {
@@ -834,6 +887,7 @@ function vivaPassages() {
     if (subjectOf(d) !== viva.subject) continue;
     if (viva.scope && d.source !== viva.scope) continue;
     if (!viva.scope && d.role === "syllabus" && subjectDocs(viva.subject).length > 1) continue; // ask from notes/lectures
+    if (!viva.scope && d.role === "paper") continue;                                         // past papers are questions, not material
     for (const c of d.chunks) {
       // videos: group notes into ~2-minute stretches; PDFs: one group per page
       const key = d.kind === "video" ? `${d.source}|${Math.floor(c.page / 120)}` : `${d.source}|${c.page}`;
@@ -1067,8 +1121,245 @@ $("vivaEnd").addEventListener("click", () => vivaReport());   // always show the
 $("vivaSpeak").addEventListener("click", () => { const v = $("vivaVoice").checked; $("vivaVoice").checked = true; speak($("vivaQuestion").textContent); $("vivaVoice").checked = v; });
 if ("speechSynthesis" in window) speechSynthesis.getVoices();
 
+/* ---------- Exam Predictor: past papers -> topics -> likely questions ---------- */
+const papersOf = (id = currentSubject) => subjectDocs(id).filter((d) => d.role === "paper")
+  .sort((a, b) => ((a.paper && a.paper.year) || 9999) - ((b.paper && b.paper.year) || 9999) || a.source.localeCompare(b.source));
+let predicting = false;
+
+/** Read the questions out of a paper (text from its chunks) and remember them on the document. */
+async function extractPaper(d, onStatus) {
+  onStatus(`${d.source}: finding the questions…`);
+  const pages = pagesFromChunks(d.chunks);
+  const r = await apiPatient("/api/papers/extract", { source: d.source, pages },
+    () => onStatus(`${d.source}: Gemini is busy, retrying…`));
+  d.paper = { exam: r.exam, year: (d.paper && d.paper.yearSetByUser) ? d.paper.year : r.year, questions: r.questions,
+              yearSetByUser: !!(d.paper && d.paper.yearSetByUser) };
+  await saveDoc(d);
+  return d;
+}
+
+async function addPapers(fileList) {
+  const files = [...fileList];
+  if (!files.length) return;
+  const status = $("paperStatus");
+  status.innerHTML = "";
+  const pdfs = files.filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+  const photos = files.filter((f) => f.type.startsWith("image/"));
+  const other = files.filter((f) => !pdfs.includes(f) && !photos.includes(f));
+  const groups = pdfs.map((f) => ({ name: f.name, run: (st) => readPdf(f, st, { paper: true }) }));
+  if (photos.length) {
+    const base = photos[0].name.replace(/\.[^.]+$/, "");
+    const name = `${base}${photos.length > 1 ? ` (+${photos.length - 1} photos)` : ""}.jpg`;
+    groups.push({ name, run: (st) => readPhotos(photos, name, st) });
+  }
+  for (const f of other) status.insertAdjacentHTML("beforeend", `<div><span class="err">${ico("alert")} ${esc(f.name)}: add a PDF or photos (JPG/PNG)</span></div>`);
+  for (const g of groups) {
+    const line = document.createElement("div");
+    status.appendChild(line);
+    const st = (t) => { line.textContent = t; };
+    try {
+      if (docs.has(g.name) && !confirm(`${g.name} is already added. Replace it?`)) { line.remove(); continue; }
+      const read = await g.run(st);
+      const doc = await indexDoc(read, st, { role: "paper" });
+      await extractPaper(docs.get(doc.source), st);
+      const p = docs.get(doc.source).paper;
+      const scanned = read.transcribed ? ` · ${read.transcribed} scanned page${read.transcribed === 1 ? "" : "s"} read` : "";
+      const lost = read.failed ? ` · ${read.failed} page${read.failed === 1 ? "" : "s"} could not be read` : "";
+      line.innerHTML = `<span class="ok">${ico("check")}</span> ${esc(doc.source)}: ${plural(p.questions.length, "question")} found${p.year ? ` · ${p.year}` : ""}${scanned}${lost}`;
+    } catch (e) {
+      line.innerHTML = `<span class="err">${ico("alert")} ${esc(g.name)}: ${esc(e.message)}</span>`;
+    }
+    renderDocs();
+  }
+  $("paperInput").value = "";
+}
+
+function renderPapers() {
+  if (!$("paperList")) return;
+  $("predSubject").textContent = subjectName();
+  const list = $("paperList");
+  const papers = papersOf();
+  list.innerHTML = papers.length ? "" : `<li class="muted-row">No past papers in “${esc(subjectName())}” yet. Add two or more years for the best prediction.</li>`;
+  for (const d of papers) {
+    const li = document.createElement("li");
+    li.className = "doc paper-row";
+    const p = d.paper;
+    const meta = p ? `${plural(p.questions.length, "question")}${p.exam ? " · " + esc(p.exam) : ""}${d.scannedPages ? ` · ${d.scannedPages} scanned page${d.scannedPages === 1 ? "" : "s"}` : ""}`
+                   : `<span class="err">questions not read yet</span>`;
+    li.innerHTML = `<div class="doc-icon">${ico("file")}</div>
+      <div><div class="name">${esc(d.source)}</div><div class="meta">${meta}</div></div>
+      <div class="actions">
+        <label class="year-in">Year <input type="number" min="1990" max="2100" placeholder="?" value="${p && p.year ? p.year : ""}"></label>
+        ${p ? "" : `<button class="btn reread">Read questions</button>`}
+        <button class="btn danger del" aria-label="Remove ${esc(d.source)}">${ico("trash")}</button>
+      </div>`;
+    li.querySelector(".del").onclick = () => removeDoc(d.source);
+    li.querySelector(".year-in input").onchange = async (e) => {
+      const y = parseInt(e.target.value, 10);
+      d.paper = { ...(d.paper || { questions: [] }), year: y >= 1990 && y <= 2100 ? y : null, yearSetByUser: true };
+      await saveDoc(d); renderDocs();
+    };
+    const rr = li.querySelector(".reread");
+    if (rr) rr.onclick = async () => {
+      rr.disabled = true;
+      const line = document.createElement("div"); $("paperStatus").appendChild(line);
+      try { await extractPaper(d, (t) => { line.textContent = t; }); line.innerHTML = `<span class="ok">${ico("check")}</span> ${esc(d.source)}: ${plural(d.paper.questions.length, "question")} found`; }
+      catch (e) { line.innerHTML = `<span class="err">${ico("alert")} ${esc(e.message)}</span>`; }
+      renderDocs();
+    };
+    list.appendChild(li);
+  }
+  const ready = papers.filter((d) => d.paper && d.paper.questions.length);
+  $("predictBtn").disabled = !ready.length || predicting;
+  $("predictHint").textContent = !ready.length ? "Add at least one past paper above."
+    : ready.length === 1 ? "One paper gives a rough guess (no trend yet). Add more years for a real prediction."
+    : `${ready.length} papers, ${ready.reduce((n, d) => n + d.paper.questions.length, 0)} questions ready${syllabusOf() ? " · topics will be mapped to your syllabus" : " · tip: set a syllabus PDF on Home to map topics to units"}.`;
+  const sub = subjects.get(currentSubject);
+  if (!predicting) {
+    if (sub && sub.prediction) renderPrediction(sub.prediction, papersKey(ready) !== sub.prediction.key);
+    else $("predictOut").innerHTML = "";
+  }
+}
+
+const papersKey = (papers) => papers.map((d) => `${d.source}:${d.paper.year || ""}:${d.paper.questions.length}`).join("|");
+
+/** Best passages in this subject's notes and lectures (not papers or the syllabus) for a query vector. */
+function studyLinks(vec, k = 2) {
+  const q = Float32Array.from(vec), best = [];
+  for (const d of subjectDocs()) {
+    if (d.role === "paper" || d.role === "syllabus") continue;
+    let top = null;
+    for (const c of d.chunks) {
+      let s = 0;
+      for (let i = 0; i < q.length; i++) s += q[i] * c.embedding[i];
+      if (!top || s > top.score) top = { source: d.source, page: c.page, score: s, kind: d.kind === "video" ? "video" : "pdf", video_id: d.videoId || "" };
+    }
+    if (top && top.score >= CONFIG.min_score) best.push(top);
+  }
+  return best.sort((a, b) => b.score - a.score).slice(0, k);
+}
+
+async function runPrediction() {
+  const papers = papersOf().filter((d) => d.paper && d.paper.questions.length);
+  if (!papers.length || predicting) return;
+  predicting = true; $("predictBtn").disabled = true;
+  const out = $("predictOut");
+  const step = (t) => { out.innerHTML = `<div class="card pred-wait"><span class="spin"></span> ${esc(t)}</div>`; };
+  try {
+    const nq = papers.reduce((n, d) => n + d.paper.questions.length, 0);
+    step(`Grouping ${nq} questions from ${plural(papers.length, "paper")} into topics…`);
+    const syl = syllabusOf();
+    const result = await apiPatient("/api/papers/predict", {
+      subject: subjectName(),
+      syllabus: syl ? pagesFromChunks(syl.chunks).map((p) => p.text).join("\n").slice(0, 6000) : "",
+      papers: papers.map((d) => ({ source: d.source, year: d.paper.year, questions: d.paper.questions })),
+    }, () => step("Gemini is busy — retrying…"));
+    step("Finding where your notes and lectures cover each topic…");
+    const top = result.topics.slice(0, 40);
+    try {
+      const queries = top.map((t) => `${t.topic}. ${(t.predicted[0] || t.asked[0].text).slice(0, 300)}`);
+      const { embeddings } = await api("/api/embed-query", { queries });
+      top.forEach((t, i) => { t.links = studyLinks(embeddings[i]); });
+    } catch (e) { console.warn("linking topics to notes failed", e); }
+    const pred = { key: papersKey(papers), at: Date.now(), ...result };
+    const sub = subjects.get(currentSubject);
+    sub.prediction = pred;
+    await store.putSubject(sub);
+    renderPrediction(pred, false);
+  } catch (e) {
+    out.innerHTML = `<div class="card"><span class="error">${ico("alert")} ${esc(e.message)}</span></div>`;
+  }
+  predicting = false;
+  renderPapers();
+}
+
+function renderPrediction(p, stale) {
+  const out = $("predictOut");
+  const years = p.papers.map((x) => x.year).filter(Boolean);
+  const span = years.length ? (Math.min(...years) === Math.max(...years) ? `${years[0]}` : `${Math.min(...years)}–${Math.max(...years)}`) : "";
+  const nq = p.papers.reduce((n, x) => n + x.questions, 0);
+  const hot = p.topics.filter((t) => t.probability >= 70).length;
+  const cls = (t) => t.probability >= 70 ? "hi" : t.probability >= 45 ? "mid" : "lo";
+  const linkHtml = (l) => l.kind === "video"
+    ? `<button class="study-link" data-video="${esc(l.video_id)}" data-t="${l.page}" data-title="${esc(l.source)}">${ico("play")}${esc(l.source.replace(/ \(YouTube\)$/, ""))} · ${fmtTs(l.page)}</button>`
+    : `<span class="study-link">${ico("file")}${esc(l.source)} · p. ${l.page}</span>`;
+  const topicCard = (t, i) => `<li class="pred-topic ${cls(t)}">
+      <div class="pt-head">
+        <span class="pt-rank">#${i + 1}</span>
+        <div class="pt-name"><b>${esc(t.topic)}</b>${t.unit ? `<span class="pt-unit">${esc(t.unit)}</span>` : ""}</div>
+        <div class="pt-prob"><span>${t.probability}%</span><small>${esc(t.label)}</small></div>
+      </div>
+      <div class="bar"><i style="width:${t.probability}%"></i></div>
+      <div class="pt-stats">Asked in ${t.papers_asked} of ${p.papers.length} paper${p.papers.length === 1 ? "" : "s"}${t.years.length ? ` (${t.years.join(", ")})` : ""} · ${plural(t.times_asked, "question")}${t.marks ? ` · ${t.marks} marks in total` : ""}</div>
+      ${t.predicted.length ? `<div class="pt-sub">Likely questions</div><ol class="pt-pred">${t.predicted.map((q) => `<li>${md(q).replace(/^<p>|<\/p>\s*$/g, "")}</li>`).join("")}</ol>` : ""}
+      ${t.tip ? `<p class="pt-tip">${ico("spark")}${esc(t.tip)}</p>` : ""}
+      ${t.links && t.links.length ? `<div class="pt-sub">Study it from</div><div class="pt-links">${t.links.map(linkHtml).join("")}</div>` : ""}
+      <details class="pt-past"><summary>Past questions (${t.asked.length})</summary><ul>${t.asked.map((q) =>
+        `<li><span class="pt-year">${q.year || "?"}${q.no ? " · Q" + esc(q.no.replace(/^Q/i, "")) : ""}${q.marks ? ` · ${q.marks}m` : ""}</span>${md(q.text).replace(/^<p>|<\/p>\s*$/g, "")}</li>`).join("")}</ul></details>
+      <div class="row pt-actions"><button class="btn explain" data-topic="${esc(t.topic)}">${ico("book")}Explain this topic</button></div>
+    </li>`;
+  out.innerHTML = `
+    ${stale ? `<div class="card stale">${ico("alert")} Your past papers changed since this prediction. <button class="btn primary" id="rerun">Predict again</button></div>` : ""}
+    <div class="pred-stats">
+      <div><b>${p.papers.length}</b><span>paper${p.papers.length === 1 ? "" : "s"}${span ? " · " + span : ""}</span></div>
+      <div><b>${nq}</b><span>questions read</span></div>
+      <div><b>${p.topics.length}</b><span>topics found</span></div>
+      <div><b>${hot}</b><span>very likely topics</span></div>
+    </div>
+    <div class="section-head"><h3>${ico("target")}Most likely in your next exam</h3>
+      <button class="btn" id="predDownload">Download report</button></div>
+    <p class="note-small">Probability = how many papers asked the topic, with recent years counting more. It's a study guide, not a guarantee.</p>
+    <ol class="pred-list">${p.topics.map(topicCard).join("")}</ol>
+    ${p.unasked && p.unasked.length ? `<div class="card"><h3 class="unasked-h">${ico("star")}Syllabus topics never asked yet</h3>
+      <p class="note-small">Not in any paper so far — examiners sometimes add these, so don't skip them.</p>
+      <div class="pt-links">${p.unasked.map((u) => `<span class="study-link">${esc(u.topic)}${u.unit ? ` · ${esc(u.unit)}` : ""}</span>`).join("")}</div></div>` : ""}
+    <p class="note-small">Predicted ${new Date(p.at).toLocaleString()}.</p>`;
+  const rr = $("rerun"); if (rr) rr.onclick = runPrediction;
+  $("predDownload").onclick = () => downloadPrediction(p);
+}
+
+function downloadPrediction(p) {
+  const lines = [`# Exam prediction — ${subjectName()}`, "",
+    `Based on ${p.papers.length} past paper(s): ${p.papers.map((x) => `${x.source}${x.year ? ` (${x.year})` : ""}`).join(", ")}.`,
+    "Probability = share of papers that asked the topic, with recent years weighted more.", ""];
+  p.topics.forEach((t, i) => {
+    lines.push(`## ${i + 1}. ${t.topic} — ${t.probability}% (${t.label})`);
+    if (t.unit) lines.push(`Unit: ${t.unit}`);
+    lines.push(`Asked in ${t.papers_asked} of ${p.papers.length} papers${t.years.length ? ` (${t.years.join(", ")})` : ""}, ${t.times_asked} question(s).`, "");
+    if (t.predicted.length) { lines.push("**Likely questions**"); t.predicted.forEach((q, k) => lines.push(`${k + 1}. ${q}`)); lines.push(""); }
+    lines.push("**Past questions**"); t.asked.forEach((q) => lines.push(`- (${q.year || "?"}${q.marks ? `, ${q.marks} marks` : ""}) ${q.text}`));
+    if (t.links && t.links.length) lines.push("", "**Study from:** " + t.links.map((l) => l.kind === "video" ? `${l.source} at ${fmtTs(l.page)}` : `${l.source}, page ${l.page}`).join("; "));
+    lines.push("");
+  });
+  if (p.unasked && p.unasked.length) { lines.push("## Syllabus topics never asked yet"); p.unasked.forEach((u) => lines.push(`- ${u.topic}${u.unit ? ` (${u.unit})` : ""}`)); }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/markdown" }));
+  a.download = `exam-prediction-${subjectName().replace(/[^\w-]+/g, "-")}.md`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+$("predictOut").addEventListener("click", (e) => {
+  const v = e.target.closest(".study-link[data-video]");
+  if (v) { openPlayer(v.dataset.video, +v.dataset.t, v.dataset.title); return; }
+  const ex = e.target.closest(".explain");
+  if (ex) {
+    showView("home");
+    $("question").value = `Explain "${ex.dataset.topic}" for my exam, with the key points and an example.`;
+    $("chatForm").requestSubmit();
+  }
+});
+$("predictBtn").addEventListener("click", runPrediction);
+$("paperInput").addEventListener("change", (e) => addPapers(e.target.files));
+{
+  const pd = $("paperDrop");
+  ["dragenter", "dragover"].forEach((ev) => pd.addEventListener(ev, (e) => { e.preventDefault(); pd.classList.add("drag"); }));
+  ["dragleave", "drop"].forEach((ev) => pd.addEventListener(ev, (e) => { e.preventDefault(); pd.classList.remove("drag"); }));
+  pd.addEventListener("drop", (e) => addPapers(e.dataTransfer.files));
+}
+
 /* ---------- views (Home / My Documents / Settings / About) ---------- */
-const VIEWS = ["home", "documents", "viva", "settings", "about"];
+const VIEWS = ["home", "documents", "viva", "predict", "settings", "about"];
 function showView(name) {
   if (!VIEWS.includes(name)) name = "home";
   document.querySelectorAll("[data-view]").forEach((v) => { v.hidden = v.dataset.view !== name; });

@@ -142,6 +142,20 @@ question is prepared while you answer, so it usually appears instantly. **End vi
 shows the report at any point: score, grade, per-question feedback, topics to
 revise and a downloadable report.
 
+### Exam Predictor (past papers)
+
+The **Exam Predictor** page takes previous-year question papers for the current subject —
+normal PDFs, scanned PDFs, or phone photos of a paper (select all photos of one paper
+together). Scanned pages and photos are read with Gemini vision, then Gemini lists every
+question with its marks and the exam year (editable if it guessed wrong).
+
+**Predict my exam** groups all the questions into topics (mapped to syllabus units when a
+syllabus is set) and writes two likely new questions per topic. The probability is not a
+model guess: it is computed in `rag/predictor.py` as half the share of papers that asked the
+topic and half a recency-weighted share (the latest paper counts most), capped at 60% when
+there is only one paper. Each topic links to where your notes or lectures cover it (video
+links open at the right second), and the report can be downloaded as Markdown.
+
 ### YouTube lectures
 
 Paste a YouTube link in the box under the upload area and click **Add video**.
