@@ -24,7 +24,24 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
-const md = (text) => DOMPurify.sanitize(marked.parse(text || ""));
+// Gemini writes formulas in LaTeX ($A \neq B$, $$...$$, \(...\), \[...\]). They are taken out
+// before Markdown parsing (so "_" and "\" are not mangled), rendered with KaTeX, and put back.
+const MATH_RE = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?!\d)/g;
+function renderMath(src, display) {
+  if (window.katex) {
+    try { return katex.renderToString(src, { displayMode: display, throwOnError: false, output: "html" }); }
+    catch { /* fall through */ }
+  }
+  return `<code>${esc(src)}</code>`;
+}
+function md(text) {
+  const math = [];
+  const t = (text || "").replace(MATH_RE, (m, a, b, c, d) => {
+    math.push(renderMath(a ?? b ?? c ?? d, a != null || b != null));
+    return `%%MATH${math.length - 1}%%`;
+  });
+  return DOMPurify.sanitize(marked.parse(t)).replace(/%%MATH(\d+)%%/g, (_, i) => math[+i]);
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const scroller = $("scroll");

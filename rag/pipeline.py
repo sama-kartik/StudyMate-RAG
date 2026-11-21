@@ -9,12 +9,13 @@ The vector store itself lives in the user's browser (IndexedDB, see public/stati
   summary:  browser splits the document into sections -> summarise_section() for
             each -> summarise_overview() over all section notes
 """
+import re
 import time
 from typing import Dict, List
 
 from .chunker import chunk_pages
 from .llm import embed, generate
-from .youtube import fmt_ts
+from .youtube import fmt_ts, parse_ts
 
 ANSWER_SYSTEM = (
     "You are a study assistant for university students. Answer ONLY using the numbered "
@@ -151,5 +152,54 @@ def summarise_overview(source: str, total_pages: int, sections: List[Dict], kind
         where="its start time" if video else "its pages",
         topic_example="Backpropagation intuition" if video else "Q.1 Meaning of economic development",
         where_example="from 12:34" if video else "Pages 1-2")
-    return {"overview": generate(prompt, system=SUMMARY_SYSTEM, temperature=0.3,
-                                 timeout_s=60, budget_s=130)}
+    if video:
+        topics = _topic_times(sections)
+        if topics:
+            prompt += ("\nStart times of the topics, taken from the notes (copy these times exactly; "
+                       "never write 00:00 unless it is listed):\n"
+                       + "\n".join(f"- {name} — from {fmt_ts(t)}" for name, t in topics) + "\n")
+    text = generate(prompt, system=SUMMARY_SYSTEM, temperature=0.3, timeout_s=60, budget_s=130)
+    if video and topics:
+        text = _fix_topic_times(text, topics)
+    return {"overview": text}
+
+
+_TIME = r"\d{1,2}:\d{2}(?::\d{2})?"
+
+
+def _topic_times(sections: List[Dict]) -> List:
+    """(heading, second) for every "### heading" in the section notes of a video.
+
+    The second is the first time cited under the heading, e.g. "*(12:34)*", kept only
+    if it falls inside that section; otherwise the section's own start is used.
+    """
+    out = []
+    for s in sections:
+        a, b = int(s["start_page"]), int(s["end_page"])
+        parts = re.split(r"^#{2,4}\s+(.+)$", s.get("notes") or "", flags=re.M)
+        for name, body in zip(parts[1::2], parts[2::2]):
+            m = re.search(rf"\(\s*({_TIME})", body) or re.search(rf"\[({_TIME})\]", body)
+            t = parse_ts(m.group(1)) if m else None
+            if t is None or not (a - 30 <= t <= b + 60):
+                t = a
+            out.append((re.sub(r"[*_`]|\(.*?\)", "", name).strip(), t))
+    return out
+
+
+def _words(text: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2}
+
+
+def _fix_topic_times(text: str, topics: List) -> str:
+    """Replace each "**Topic** — from MM:SS" time with the time of the best-matching note heading."""
+    def fix(m):
+        name = _words(m.group(2))
+        best, score = None, 0.0
+        for heading, t in topics:
+            h = _words(heading)
+            if name and h:
+                sc = len(name & h) / len(name | h)
+                if sc > score:
+                    best, score = t, sc
+        return m.group(1) + fmt_ts(best) if best is not None and score >= 0.25 else m.group(0)
+    return re.sub(rf"^(\s*[-*]\s*\*\*(.+?)\*\*.*?from\s+)({_TIME})", fix, text, flags=re.M)
