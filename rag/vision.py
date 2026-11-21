@@ -70,7 +70,7 @@ def read_pages(source: str, pages: List[Dict]) -> List[Dict]:
     parts.append(types.Part(text=PROMPT_TAIL))
 
     raw = generate([types.Content(role="user", parts=parts)], temperature=0.1,
-                   timeout_s=45, budget_s=130, json_mode=True, models=VISION_MODELS)
+                   timeout_s=30, budget_s=130, json_mode=True, models=VISION_MODELS, quick=True)
     return _parse(raw, pages)
 
 

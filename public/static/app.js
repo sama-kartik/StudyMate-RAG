@@ -614,7 +614,7 @@ async function renderImage(file, width = 1600) {
 
 /** Let Gemini read page images. jobs: [{p: {page, text}, mode: "transcribe"|"visuals", image: () => Promise<dataURL>}].
  *  A batch that fails is retried one page at a time, so one bad page never loses its neighbours. */
-async function visionRead(source, jobs, onProgress) {
+async function visionRead(source, jobs, onProgress, { batch: batchSize = VISION_BATCH, parallel = VISION_PARALLEL } = {}) {
   let seen = 0, transcribed = 0, described = 0;
   const failed = [];
   const apply = (batch, r) => {
@@ -631,7 +631,7 @@ async function visionRead(source, jobs, onProgress) {
     return apiPatient("/api/vision/pages", { source, pages: payload });
   };
   const batches = [];
-  for (let i = 0; i < jobs.length; i += VISION_BATCH) batches.push(jobs.slice(i, i + VISION_BATCH));
+  for (let i = 0; i < jobs.length; i += batchSize) batches.push(jobs.slice(i, i + batchSize));
   onProgress(0, jobs.length);
   await runLimited(batches.map((batch) => async () => {
     try { apply(batch, await send(batch)); }
@@ -642,7 +642,7 @@ async function visionRead(source, jobs, onProgress) {
       }
     }
     seen += batch.length; onProgress(seen, jobs.length);
-  }), VISION_PARALLEL);
+  }), parallel);
   return { transcribed, described, failed: failed.length };
 }
 
@@ -665,7 +665,8 @@ async function readPdf(file, onStatus, opts = {}) {
   }
   let v = { transcribed: 0, described: 0, failed: 0 };
   if (jobs.length) {
-    v = await visionRead(source, jobs, (done, n) => onStatus(`${source}: Gemini is reading ${n} scanned/picture page${n === 1 ? "" : "s"} — ${done} of ${n} done…`));
+    v = await visionRead(source, jobs, (done, n) => onStatus(`${source}: Gemini is reading ${n} scanned/picture page${n === 1 ? "" : "s"} — ${done} of ${n} done…`),
+      opts.paper ? { batch: 1, parallel: 4 } : {});
   }
   const pages = all.filter((p) => p.text.trim()).map(({ page, text }) => ({ page, text }));
   if (!pages.length) throw new Error("no readable text, even from the page images");
@@ -676,7 +677,8 @@ async function readPdf(file, onStatus, opts = {}) {
 async function readPhotos(files, name, onStatus) {
   const all = files.map((f, i) => ({ page: i + 1, text: "" }));
   const jobs = all.map((p, i) => ({ p, mode: "transcribe", image: () => renderImage(files[i]) }));
-  const v = await visionRead(name, jobs, (done, n) => onStatus(`${name}: Gemini is reading ${n} photo${n === 1 ? "" : "s"} — ${done} of ${n} done…`));
+  const v = await visionRead(name, jobs, (done, n) => onStatus(`${name}: Gemini is reading ${n} photo${n === 1 ? "" : "s"} — ${done} of ${n} done…`),
+    { batch: 1, parallel: 4 });
   const pages = all.filter((p) => p.text.trim());
   if (!pages.length) throw new Error("Gemini couldn't read any text from these photos — try clearer, well-lit pictures");
   return { source: name, pages, numPages: files.length, ...v };
@@ -1179,12 +1181,14 @@ const papersOf = (id = currentSubject) => subjectDocs(id).filter((d) => d.role =
   .sort((a, b) => ((a.paper && a.paper.year) || 9999) - ((b.paper && b.paper.year) || 9999) || a.source.localeCompare(b.source));
 let predicting = false;
 
+function findQuestions(source, pages, onStatus) {
+  return apiPatient("/api/papers/extract", { source, pages }, () => onStatus(`${source}: Gemini is busy, retrying…`));
+}
+
 /** Read the questions out of a paper (text from its chunks) and remember them on the document. */
-async function extractPaper(d, onStatus) {
+async function extractPaper(d, onStatus, pages) {
   onStatus(`${d.source}: finding the questions…`);
-  const pages = pagesFromChunks(d.chunks);
-  const r = await apiPatient("/api/papers/extract", { source: d.source, pages },
-    () => onStatus(`${d.source}: Gemini is busy, retrying…`));
+  const r = await findQuestions(d.source, pages || pagesFromChunks(d.chunks), onStatus);
   d.paper = { exam: r.exam, year: (d.paper && d.paper.yearSetByUser) ? d.paper.year : r.year, questions: r.questions,
               yearSetByUser: !!(d.paper && d.paper.yearSetByUser) };
   await saveDoc(d);
@@ -1219,9 +1223,18 @@ async function addPapers(fileList) {
     try {
       if (docs.has(g.name) && !confirm(`${g.name} is already added. Replace it?`)) { line.remove(); return; }
       const read = await g.run(st);
-      const doc = await indexDoc(read, st, { role: "paper", subject });
-      await extractPaper(docs.get(doc.source), st);
-      const p = docs.get(doc.source).paper;
+      // Finding the questions only needs the text, so it runs while the pages are indexed for search.
+      let indexed = false, found = false;
+      const both = () => st(`${read.source}: finding the questions${found ? " ✓" : "…"} · indexing for search${indexed ? " ✓" : "…"}`);
+      both();
+      const [doc, q] = await Promise.all([
+        indexDoc(read, () => {}, { role: "paper", subject }).then((d) => { indexed = true; both(); return d; }),
+        findQuestions(read.source, read.pages, st).then((r) => { found = true; both(); return r; }),
+      ]);
+      const d = docs.get(doc.source);
+      d.paper = { exam: q.exam, year: q.year, questions: q.questions, yearSetByUser: false };
+      await saveDoc(d);
+      const p = d.paper;
       const scanned = read.transcribed ? ` · ${read.transcribed} scanned page${read.transcribed === 1 ? "" : "s"} read` : "";
       const lost = read.failed ? ` · ${read.failed} page${read.failed === 1 ? "" : "s"} could not be read` : "";
       line.innerHTML = `<span class="ok">${ico("check")}</span> ${esc(doc.source)}: ${plural(p.questions.length, "question")} found${p.year ? ` · ${p.year}` : ""}${scanned}${lost}`;

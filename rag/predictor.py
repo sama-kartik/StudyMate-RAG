@@ -13,8 +13,10 @@ from typing import Dict, List, Optional
 
 from .llm import generate, loads_json
 
-PREDICT_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3-flash-preview",
-                  "gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
+# Grouping questions needs some judgement: a Flash model with thinking turned off (quick
+# mode, ~5-10 s) first, lite models next, the larger models last.
+PREDICT_MODELS = ["gemini-3-flash-preview", "gemini-3.5-flash-lite", "gemini-flash-lite-latest",
+                  "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.8-flash"]
 # Reading questions out of a paper is simple copying: fast "lite" models do it in 2-3 s
 # (larger models take 10-60 s), so they go first, with short timeouts so an overloaded
 # model is skipped quickly instead of eating the request's time.
@@ -78,8 +80,8 @@ def extract_questions(source: str, pages: List[Dict]) -> Dict:
     if not text:
         raise ValueError("This paper has no readable text.")
     data = _json(generate(EXTRACT_PROMPT.format(source=source, text=text[:MAX_PAPER_CHARS], math_rule=MATH_RULE),
-                          temperature=0.1, timeout_s=35, budget_s=130, json_mode=True,
-                          models=EXTRACT_MODELS))
+                          temperature=0.1, timeout_s=20, budget_s=130, json_mode=True,
+                          models=EXTRACT_MODELS, quick=True))
     qs = []
     for q in data.get("questions") or []:
         if not isinstance(q, dict) or not str(q.get("text") or "").strip():
@@ -160,8 +162,8 @@ def predict(papers: List[Dict], subject: str = "", syllabus: str = "") -> Dict:
                                  syllabus_part=syllabus_part, questions="\n".join(lines),
                                  unit_hint="syllabus unit name" if syllabus.strip() else "broad area",
                                  math_rule=MATH_RULE)
-    data = _json(generate(prompt, temperature=0.3, timeout_s=70, budget_s=135, json_mode=True,
-                          models=PREDICT_MODELS), list_key="topics")
+    data = _json(generate(prompt, temperature=0.3, timeout_s=50, budget_s=135, json_mode=True,
+                          models=PREDICT_MODELS, quick=True), list_key="topics")
 
     topics, used = [], set()
     for t in data.get("topics") or []:

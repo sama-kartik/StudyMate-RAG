@@ -98,10 +98,13 @@ def _daily_quota_wait(e: errors.APIError) -> Optional[float]:
     return delay if per_day else None
 
 
+_NO_QUICK: set = set()   # models that rejected thinking_budget=0
+
+
 def generate(prompt, system: str = None, temperature: float = 0.2,
              timeout_s: float = 20, budget_s: float = GENERATE_BUDGET_S,
              json_mode: bool = False, low_media_resolution: bool = False,
-             models: Optional[List[str]] = None) -> str:
+             models: Optional[List[str]] = None, quick: bool = False) -> str:
     """Generate text, falling back to other models when one is busy, slow or out of quota.
 
     Models whose free daily quota is used up are skipped until it resets. If every
@@ -112,6 +115,9 @@ def generate(prompt, system: str = None, temperature: float = 0.2,
     json_mode: ask the model to reply with JSON only.
     low_media_resolution: fewer tokens per video frame (faster, cheaper; fine for lectures).
     models:    try these models in this order instead of the configured list.
+    quick:     no "thinking" on models that think by default (non-lite Flash models); it
+               roughly halves their reply time for extraction/grouping tasks. Lite models
+               don't think and reject the setting, so it is not sent to them.
     """
     last_err, quota_hit = None, False
     start = time.monotonic()
@@ -125,7 +131,9 @@ def generate(prompt, system: str = None, temperature: float = 0.2,
             if remaining < 5:
                 break  # stay inside the hosting platform's request time limit
             tried_any = True
+            no_think = quick and "lite" not in model and model not in _NO_QUICK
             config = types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(thinking_budget=0) if no_think else None,
                 system_instruction=system, temperature=temperature,
                 http_options=types.HttpOptions(timeout=int(min(timeout_s, remaining) * 1000)),
                 response_mime_type="application/json" if json_mode else None,
@@ -149,6 +157,12 @@ def generate(prompt, system: str = None, temperature: float = 0.2,
                     quota_hit = True
                     log.warning("Gemini model %s: daily free quota used up, skipping it", model)
                     continue
+                if no_think and e.code == 400:
+                    _NO_QUICK.add(model)            # model insists on thinking: retry it normally
+                    log.warning("Gemini model %s rejected quick mode; retrying with thinking", model)
+                    return generate(prompt, system, temperature, timeout_s,
+                                    budget_s - (time.monotonic() - start), json_mode,
+                                    low_media_resolution, models, quick)
                 if e.code in _RETRYABLE:
                     log.warning("Gemini model %s failed (%s), trying next model", model, e.code)
                     continue
