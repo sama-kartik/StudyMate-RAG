@@ -5,7 +5,7 @@ import json
 import re
 from typing import Dict, List, Optional
 
-from .llm import generate
+from .llm import generate, loads_json
 from .youtube import fmt_ts
 
 DIFFICULTY = {
@@ -31,11 +31,7 @@ def _context(passages: List[Dict]) -> str:
 
 
 def _json(raw: str) -> Dict:
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", raw, re.S)
-        return json.loads(m.group(0)) if m else {}
+    return loads_json(raw)
 
 
 def ask(passages: List[Dict], difficulty: str = "medium", previous: Optional[List[str]] = None,

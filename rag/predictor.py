@@ -11,10 +11,17 @@ import json
 import re
 from typing import Dict, List, Optional
 
-from .llm import generate
+from .llm import generate, loads_json
 
 PREDICT_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3-flash-preview",
                   "gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
+# Reading questions out of a paper is simple copying: fast "lite" models do it in 2-3 s
+# (larger models take 10-60 s), so they go first, with short timeouts so an overloaded
+# model is skipped quickly instead of eating the request's time.
+EXTRACT_MODELS = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+                  "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.8-flash"]
+MATH_RULE = ("Write every mathematical expression in LaTeX between dollar signs, e.g. "
+             "$u = r^n \\cos(n\\theta)$ or $\\frac{\\partial u}{\\partial r}$; never leave LaTeX outside $...$.")
 MAX_PAPER_CHARS = 40000
 MAX_QUESTIONS = 400
 
@@ -26,7 +33,7 @@ EXTRACT_PROMPT = """Below is the text of a university exam question paper, "{sou
 List every question and sub-question a student must answer, in order. Reply as JSON:
 {{"exam": "short exam name, at most 5 words, e.g. End Sem 2023 or Mid Sem", "year": <4-digit year or null>,
   "questions": [{{"no": "1(a)", "text": "full question text", "marks": <number or null>, "page": <page number>}}]}}
-Rules: copy each question's wording faithfully (fix obvious OCR errors only); split sub-parts
+Rules: copy each question's wording faithfully (fix obvious OCR errors only); {math_rule} Split sub-parts
 (a), (b), ... into separate entries; skip instructions like "Attempt any five"; use the year
 printed on the paper (null if none)."""
 
@@ -43,15 +50,12 @@ Reply as JSON:
 {{"topics": [{{"topic": "short name", "unit": "{unit_hint}", "question_ids": ["Q3", ...],
               "predicted": ["...", "..."], "tip": "one sentence on how to prepare it"}}],
   "unasked": [{{"topic": "...", "unit": "..."}}]}}
+{math_rule}
 "unasked" lists important syllabus topics that no paper has asked yet (empty list if there is no syllabus)."""
 
 
-def _json(raw: str) -> Dict:
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", raw, re.S)
-        return json.loads(m.group(0)) if m else {}
+def _json(raw: str, list_key: str = "questions") -> Dict:
+    return loads_json(raw, list_key)
 
 
 def _year(v) -> Optional[int]:
@@ -73,9 +77,9 @@ def extract_questions(source: str, pages: List[Dict]) -> Dict:
                        for p in pages if str(p.get("text") or "").strip())
     if not text:
         raise ValueError("This paper has no readable text.")
-    data = _json(generate(EXTRACT_PROMPT.format(source=source, text=text[:MAX_PAPER_CHARS]),
-                          temperature=0.1, timeout_s=80, budget_s=130, json_mode=True,
-                          models=PREDICT_MODELS))
+    data = _json(generate(EXTRACT_PROMPT.format(source=source, text=text[:MAX_PAPER_CHARS], math_rule=MATH_RULE),
+                          temperature=0.1, timeout_s=35, budget_s=130, json_mode=True,
+                          models=EXTRACT_MODELS))
     qs = []
     for q in data.get("questions") or []:
         if not isinstance(q, dict) or not str(q.get("text") or "").strip():
@@ -95,6 +99,16 @@ def extract_questions(source: str, pages: List[Dict]) -> Dict:
     exam = re.sub(r"\s+", " ", str(data.get("exam") or "")).strip()
     return {"exam": exam if len(exam) <= 40 else exam[:38].rsplit(" ", 1)[0] + "…",
             "year": _year(data.get("year")) or year_from_name(source), "questions": qs}
+
+
+def _short(text: str, n: int = 80) -> str:
+    """Shorten a question to use as a topic name without cutting a $...$ formula in half."""
+    if len(text) <= n:
+        return text
+    cut = text[:n].rsplit(" ", 1)[0]
+    if cut.count("$") % 2:
+        cut = cut[:cut.rfind("$")].rstrip()
+    return cut + "…"
 
 
 def probability(present: List[bool]) -> int:
@@ -144,9 +158,10 @@ def predict(papers: List[Dict], subject: str = "", syllabus: str = "") -> Dict:
                      if syllabus.strip() else "\nNo syllabus was provided.\n")
     prompt = GROUP_PROMPT.format(n_papers=len(papers), subject=subject or "this course",
                                  syllabus_part=syllabus_part, questions="\n".join(lines),
-                                 unit_hint="syllabus unit name" if syllabus.strip() else "broad area")
-    data = _json(generate(prompt, temperature=0.3, timeout_s=110, budget_s=135, json_mode=True,
-                          models=PREDICT_MODELS))
+                                 unit_hint="syllabus unit name" if syllabus.strip() else "broad area",
+                                 math_rule=MATH_RULE)
+    data = _json(generate(prompt, temperature=0.3, timeout_s=70, budget_s=135, json_mode=True,
+                          models=PREDICT_MODELS), list_key="topics")
 
     topics, used = [], set()
     for t in data.get("topics") or []:
@@ -178,7 +193,7 @@ def predict(papers: List[Dict], subject: str = "", syllabus: str = "") -> Dict:
         present = [q["paper"] == pi for pi in range(len(papers))]
         prob = probability(present)
         y = papers[q["paper"]].get("year")
-        topics.append({"topic": q["text"][:70] + ("…" if len(q["text"]) > 70 else ""), "unit": "",
+        topics.append({"topic": _short(q["text"]), "unit": "",
                        "probability": prob, "label": label(prob), "papers_asked": 1, "times_asked": 1,
                        "years": [y] if y else [], "marks": q.get("marks") or 0,
                        "asked": [{"text": q["text"], "no": q.get("no"), "marks": q.get("marks"),

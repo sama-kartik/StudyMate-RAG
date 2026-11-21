@@ -6,10 +6,10 @@ If the main generation model is overloaded (503), rate-limited (429) or retired
 import logging
 import math
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
-from functools import lru_cache
 from typing import Dict, List, Optional
 
 from google import genai
@@ -34,8 +34,26 @@ class LLMError(RuntimeError):
         self.daily_quota = daily_quota  # retrying today won't help
 
 
-@lru_cache(maxsize=1)
+_CLIENT: Optional[genai.Client] = None
+_CLIENT_LOCK = threading.Lock()
+
+
 def _client() -> genai.Client:
+    """One shared client, created once.
+
+    Created under a lock: when two requests arrived together on a fresh server, both
+    built a client, the extra one was garbage-collected, and its __del__ closed the
+    connection the other request was still using ("the client has been closed").
+    """
+    global _CLIENT
+    if _CLIENT is None:
+        with _CLIENT_LOCK:
+            if _CLIENT is None:
+                _CLIENT = _new_client()
+    return _CLIENT
+
+
+def _new_client() -> genai.Client:
     if not GEMINI_API_KEY:
         raise LLMError(
             "GEMINI_API_KEY is not set. On Vercel: Project → Settings → Environment Variables, "
@@ -186,3 +204,45 @@ def embed(texts: List[str], query: bool = False) -> List[List[float]]:
             except Exception as e:
                 raise LLMError(f"Gemini embedding failed: {e}")
     return out
+
+
+# LaTeX commands models write inside JSON strings. With a single backslash, "\theta" or
+# "\frac" parse as a tab or form feed and "\sin" is invalid JSON, so they are doubled first.
+_TEX_IN_JSON = re.compile(
+    r"(?<!\\)\\(?=(?:frac|dfrac|partial|theta|times|tau|tan|tanh|text|textbf|beta|bar|binom|nabla|nu|neq|ne|"
+    r"rho|right|rightarrow|Rightarrow|alpha|sin|sinh|sum|sqrt|sigma|Sigma|subset|cos|cosh|cot|cdot|cdots|cup|cap|"
+    r"delta|Delta|det|div|epsilon|varepsilon|exp|equiv|exists|forall|gamma|Gamma|geq|ge|hat|infty|int|iint|in|iota|"
+    r"kappa|lambda|Lambda|left|underline|leq|le|lim|ln|log|ldots|mu|mathbf|mathrm|max|min|omega|Omega|oint|overline|phi|Phi|"
+    r"pi|Pi|pm|prod|psi|quad|vec|varphi|xi|zeta|eta|chi|approx|angle|circ|leftarrow|to|mid|perp|propto)(?![a-zA-Z]))")
+
+
+def loads_json(raw: str, list_key: Optional[str] = None) -> Dict:
+    """Parse a model's JSON reply, tolerating LaTeX backslashes, surrounding text and bare lists."""
+    import json
+    fixed = _TEX_IN_JSON.sub(r"\\\\", raw or "")
+    # any other backslash that is not a JSON escape (LaTeX "\," "\{" "\!" ...) is doubled too
+    fixed = re.sub(r'(?<!\\)((?:\\\\)*)\\(?![\\"/bfnrtu])', r"\1\\\\", fixed)
+    data = None
+    for text in (fixed, raw or ""):
+        try:
+            data = json.loads(text)
+            break
+        except json.JSONDecodeError:
+            m = re.search(r"\{.*\}|\[.*\]", text, re.S)
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                    break
+                except json.JSONDecodeError:
+                    pass
+    if isinstance(data, list):
+        objs = [x for x in data if isinstance(x, dict)]
+        if len(objs) == 1 and (list_key is None or list_key in objs[0]):
+            data = objs[0]                   # the whole answer wrapped in a list: [{...}]
+        elif list_key and objs and all(list_key in o for o in objs):
+            merged = dict(objs[0])           # several wrapped answers: join their lists
+            merged[list_key] = [y for o in objs for y in (o.get(list_key) or [])]
+            data = merged
+        elif list_key:
+            data = {list_key: data}          # just the list itself
+    return data if isinstance(data, dict) else {}

@@ -12,14 +12,19 @@ from typing import Dict, List
 
 from google.genai import types
 
-from .llm import generate
+from .llm import generate, loads_json
 
 MAX_PAGES_PER_REQUEST = 3
+# Reading a page image takes ~8-9 s on these models and 20 s+ on the larger ones,
+# with the same transcription quality in testing; larger models stay as fallbacks.
+VISION_MODELS = ["gemini-3-flash-preview", "gemini-flash-lite-latest", "gemini-3.5-flash-lite",
+                 "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.8-flash"]
 MAX_IMAGE_BYTES = 1_200_000
 
 TRANSCRIBE = """Page {page} of "{source}" is a scanned image. Transcribe it for a study assistant:
 - All text in natural reading order, keeping headings, lists and question numbers.
-- Tables as Markdown tables; formulas in plain text (e.g. x^2 + y^2 = r^2).
+- Tables as Markdown tables; mathematics in LaTeX between dollar signs (e.g. $x^2 + y^2 = r^2$,
+  $\\frac{{\\partial u}}{{\\partial r}}$).
 - For each diagram, chart or figure, add a line "[Figure: ...]" describing what it shows,
   including labels, axes and the point it makes.
 Do not add anything that is not on the page."""
@@ -65,12 +70,12 @@ def read_pages(source: str, pages: List[Dict]) -> List[Dict]:
     parts.append(types.Part(text=PROMPT_TAIL))
 
     raw = generate([types.Content(role="user", parts=parts)], temperature=0.1,
-                   timeout_s=60, budget_s=130, json_mode=True)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", raw, re.S)
-        data = json.loads(m.group(0)) if m else {"pages": []}
+                   timeout_s=45, budget_s=130, json_mode=True, models=VISION_MODELS)
+    return _parse(raw, pages)
+
+
+def _parse(raw: str, pages: List[Dict]) -> List[Dict]:
+    data = loads_json(raw, "pages")
     by_page = {}
     for item in data.get("pages") or []:
         try:

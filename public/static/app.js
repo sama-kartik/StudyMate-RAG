@@ -34,12 +34,65 @@ function renderMath(src, display) {
   }
   return `<code>${esc(src)}</code>`;
 }
+// Models sometimes forget the dollar signs ("prove that \frac{\partial u}{\partial r} = ...").
+// Runs of words containing LaTeX commands, ^ or _ are wrapped as inline maths.
+const TEX_CMD = /\\(?:frac|dfrac|partial|theta|alpha|beta|gamma|delta|Delta|epsilon|varepsilon|lambda|mu|pi|rho|sigma|Sigma|tau|phi|varphi|psi|omega|Omega|nabla|sin|cos|tan|sec|csc|cot|sinh|cosh|tanh|log|ln|exp|sqrt|sum|prod|int|iint|iiint|oint|lim|infty|cdot|cdots|ldots|times|div|pm|mp|neq|ne|leq|le|geq|ge|approx|equiv|to|rightarrow|Rightarrow|leftarrow|leftrightarrow|iff|left|right|mathbf|mathrm|vec|hat|bar|dot|ddot|overline|in|notin|subset|subseteq|cup|cap|forall|exists|quad|det|max|min)(?![a-zA-Z])/;
+const STOP = new Set(["if", "is", "of", "to", "at", "in", "be", "as", "an", "or", "by", "on", "it", "we", "a", "and", "the", "for", "then", "that", "show", "prove", "find", "where", "when", "with"]);
+function balanced(t) {
+  let b = 0, p = 0;
+  for (const ch of t) { if (ch === "{") b++; else if (ch === "}") b--; else if (ch === "(") p++; else if (ch === ")") p--; }
+  return b <= 0 && p <= 0;
+}
+function wrapBareTex(text, math) {
+  if (!TEX_CMD.test(text)) return text;
+  return text.split(/(```[\s\S]*?```|`[^`\n]*`|%%MATH\d+%%)/).map((part, i) => {
+    if (i % 2) return part;                                           // code or existing maths
+    return part.split("\n").map((lineText) => {
+      if (!TEX_CMD.test(lineText)) return lineText;
+      const raw = lineText.split(/(\s+)/);                              // words and spaces
+      const toks = [];                                                  // merge words until braces balance
+      for (let k = 0; k < raw.length; k += 2) {
+        let w = raw[k], sp = raw[k + 1] || "";
+        while (!balanced(w) && k + 2 < raw.length) { w += sp + raw[k + 2]; k += 2; sp = raw[k + 1] || ""; }
+        toks.push({ w, sp });
+      }
+      const core = (w) => w.replace(/^[*_]+|[.,;:!?*]+$/g, "");
+      const isMath = (w) => TEX_CMD.test(w) || /[\^_]/.test(core(w)) && /\w[\^_]/.test(w);
+      const joins = (w) => /^[=+\-<>≤≥≠×·/]+$/.test(core(w)) || (/^[A-Za-z0-9()]{1,3}$/.test(core(w)) && !STOP.has(core(w).toLowerCase()));
+      const mark = toks.map((t) => isMath(t.w));
+      for (let k = 0; k < toks.length; k++) {                            // absorb operators and short variables next to maths
+        if (mark[k]) continue;
+        if (!joins(toks[k].w)) continue;
+        let l = k - 1, r = k + 1;
+        while (l >= 0 && !mark[l] && joins(toks[l].w)) l--;
+        while (r < toks.length && !mark[r] && joins(toks[r].w)) r++;
+        if ((l >= 0 && mark[l]) || (r < toks.length && mark[r])) for (let x = l + 1; x < r; x++) mark[x] = "j";
+      }
+      let out = "";
+      for (let k = 0; k < toks.length; ) {
+        if (!mark[k]) { out += toks[k].w + toks[k].sp; k++; continue; }
+        let e = k, src = "";
+        while (e < toks.length && mark[e]) e++;
+        for (let x = k; x < e; x++) src += toks[x].w + (x < e - 1 ? toks[x].sp : "");
+        const tail = (src.match(/[.,;:!?]+$/) || [""])[0];
+        src = src.slice(0, src.length - tail.length);
+        if (TEX_CMD.test(src) || /\w[\^_]/.test(src)) { math.push(renderMath(src, false)); out += `%%MATH${math.length - 1}%%` + tail; }
+        else out += src + tail;
+        out += toks[e - 1].sp;
+        k = e;
+      }
+      return out;
+    }).join("\n");
+  }).join("");
+}
+
 function md(text) {
   const math = [];
-  const t = (text || "").replace(MATH_RE, (m, a, b, c, d) => {
+  let t = (text || "").replace(MATH_RE, (m, a, b, c, d) => {
     math.push(renderMath(a ?? b ?? c ?? d, a != null || b != null));
     return `%%MATH${math.length - 1}%%`;
   });
+  t = wrapBareTex(t, math);
   return DOMPurify.sanitize(marked.parse(t)).replace(/%%MATH(\d+)%%/g, (_, i) => math[+i]);
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1153,14 +1206,20 @@ async function addPapers(fileList) {
     groups.push({ name, run: (st) => readPhotos(photos, name, st) });
   }
   for (const f of other) status.insertAdjacentHTML("beforeend", `<div><span class="err">${ico("alert")} ${esc(f.name)}: add a PDF or photos (JPG/PNG)</span></div>`);
-  for (const g of groups) {
+  const subject = currentSubject;                 // stays with the papers even if you switch subjects meanwhile
+  const lines = groups.map((g) => {
     const line = document.createElement("div");
+    line.textContent = `${g.name}: waiting…`;
     status.appendChild(line);
+    return line;
+  });
+  await runLimited(groups.map((g, gi) => async () => {
+    const line = lines[gi];
     const st = (t) => { line.textContent = t; };
     try {
-      if (docs.has(g.name) && !confirm(`${g.name} is already added. Replace it?`)) { line.remove(); continue; }
+      if (docs.has(g.name) && !confirm(`${g.name} is already added. Replace it?`)) { line.remove(); return; }
       const read = await g.run(st);
-      const doc = await indexDoc(read, st, { role: "paper" });
+      const doc = await indexDoc(read, st, { role: "paper", subject });
       await extractPaper(docs.get(doc.source), st);
       const p = docs.get(doc.source).paper;
       const scanned = read.transcribed ? ` · ${read.transcribed} scanned page${read.transcribed === 1 ? "" : "s"} read` : "";
@@ -1170,13 +1229,18 @@ async function addPapers(fileList) {
       line.innerHTML = `<span class="err">${ico("alert")} ${esc(g.name)}: ${esc(e.message)}</span>`;
     }
     renderDocs();
-  }
+  }), 2);
   $("paperInput").value = "";
 }
 
 function renderPapers() {
   if (!$("paperList")) return;
   $("predSubject").textContent = subjectName();
+  const ps = $("predSubjectSel");
+  ps.innerHTML = [...subjects.values()].sort((a, b) => (a.id === "general") - (b.id === "general") || a.name.localeCompare(b.name))
+    .map((x) => `<option value="${esc(x.id)}">${esc(x.name)} (${plural(papersOf(x.id).length, "paper")})</option>`).join("");
+  ps.value = currentSubject;
+  ps.disabled = predicting;
   const list = $("paperList");
   const papers = papersOf();
   list.innerHTML = papers.length ? "" : `<li class="muted-row">No past papers in “${esc(subjectName())}” yet. Add two or more years for the best prediction.</li>`;
@@ -1273,6 +1337,8 @@ async function runPrediction() {
   renderPapers();
 }
 
+const mdInline = (text) => md(text).trim().replace(/^<p>|<\/p>$/g, "");
+
 function renderPrediction(p, stale) {
   const out = $("predictOut");
   const years = p.papers.map((x) => x.year).filter(Boolean);
@@ -1286,16 +1352,16 @@ function renderPrediction(p, stale) {
   const topicCard = (t, i) => `<li class="pred-topic ${cls(t)}">
       <div class="pt-head">
         <span class="pt-rank">#${i + 1}</span>
-        <div class="pt-name"><b>${esc(t.topic)}</b>${t.unit ? `<span class="pt-unit">${esc(t.unit)}</span>` : ""}</div>
+        <div class="pt-name"><b>${mdInline(t.topic)}</b>${t.unit ? `<span class="pt-unit">${esc(t.unit)}</span>` : ""}</div>
         <div class="pt-prob"><span>${t.probability}%</span><small>${esc(t.label)}</small></div>
       </div>
       <div class="bar"><i style="width:${t.probability}%"></i></div>
       <div class="pt-stats">Asked in ${t.papers_asked} of ${p.papers.length} paper${p.papers.length === 1 ? "" : "s"}${t.years.length ? ` (${t.years.join(", ")})` : ""} · ${plural(t.times_asked, "question")}${t.marks ? ` · ${t.marks} marks in total` : ""}</div>
-      ${t.predicted.length ? `<div class="pt-sub">Likely questions</div><ol class="pt-pred">${t.predicted.map((q) => `<li>${md(q).replace(/^<p>|<\/p>\s*$/g, "")}</li>`).join("")}</ol>` : ""}
-      ${t.tip ? `<p class="pt-tip">${ico("spark")}${esc(t.tip)}</p>` : ""}
+      ${t.predicted.length ? `<div class="pt-sub">Likely questions</div><ol class="pt-pred">${t.predicted.map((q) => `<li>${mdInline(q)}</li>`).join("")}</ol>` : ""}
+      ${t.tip ? `<p class="pt-tip">${ico("spark")}<span>${mdInline(t.tip)}</span></p>` : ""}
       ${t.links && t.links.length ? `<div class="pt-sub">Study it from</div><div class="pt-links">${t.links.map(linkHtml).join("")}</div>` : ""}
       <details class="pt-past"><summary>Past questions (${t.asked.length})</summary><ul>${t.asked.map((q) =>
-        `<li><span class="pt-year">${q.year || "?"}${q.no ? " · Q" + esc(q.no.replace(/^Q/i, "")) : ""}${q.marks ? ` · ${q.marks}m` : ""}</span>${md(q.text).replace(/^<p>|<\/p>\s*$/g, "")}</li>`).join("")}</ul></details>
+        `<li><span class="pt-year">${q.year || "?"}${q.no ? " · Q" + esc(q.no.replace(/^Q/i, "")) : ""}${q.marks ? ` · ${q.marks}m` : ""}</span>${mdInline(q.text)}</li>`).join("")}</ul></details>
       <div class="row pt-actions"><button class="btn explain" data-topic="${esc(t.topic)}">${ico("book")}Explain this topic</button></div>
     </li>`;
   out.innerHTML = `
@@ -1312,7 +1378,7 @@ function renderPrediction(p, stale) {
     <ol class="pred-list">${p.topics.map(topicCard).join("")}</ol>
     ${p.unasked && p.unasked.length ? `<div class="card"><h3 class="unasked-h">${ico("star")}Syllabus topics never asked yet</h3>
       <p class="note-small">Not in any paper so far — examiners sometimes add these, so don't skip them.</p>
-      <div class="pt-links">${p.unasked.map((u) => `<span class="study-link">${esc(u.topic)}${u.unit ? ` · ${esc(u.unit)}` : ""}</span>`).join("")}</div></div>` : ""}
+      <div class="pt-links">${p.unasked.map((u) => `<span class="study-link">${mdInline(u.topic)}${u.unit ? ` · ${esc(u.unit)}` : ""}</span>`).join("")}</div></div>` : ""}
     <p class="note-small">Predicted ${new Date(p.at).toLocaleString()}.</p>`;
   const rr = $("rerun"); if (rr) rr.onclick = runPrediction;
   $("predDownload").onclick = () => downloadPrediction(p);
@@ -1350,6 +1416,8 @@ $("predictOut").addEventListener("click", (e) => {
   }
 });
 $("predictBtn").addEventListener("click", runPrediction);
+$("predSubjectSel").addEventListener("change", (e) => { $("paperStatus").innerHTML = ""; switchSubject(e.target.value); });
+$("predNewSubject").addEventListener("click", () => { $("paperStatus").innerHTML = ""; newSubject(); });
 $("paperInput").addEventListener("change", (e) => addPapers(e.target.files));
 {
   const pd = $("paperDrop");
